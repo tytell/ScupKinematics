@@ -7,92 +7,93 @@ output: html_document
 knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```
 
-Target Markdown is a powerful R Markdown interface for reproducible analysis pipelines, and the chapter at https://books.ropensci.org/targets/markdown.html walks through it in detail. This R Markdown report the example from the chapter. Try it out in both interactive and non-interactive modes, either by running the code chunks in different ways or setting the `tar_interactive` chunk option.
-
-# Packages
-
-The example requires several R packages, and `targets` must be version 0.5.0.9000 or above. 
-
-```{r, eval = FALSE}
-install.packages(c("biglm", "dplyr", "ggplot2", "readr", "targets", "tidyr"))
-```
-
 # Setup
 
-If you are using old versions of `targets` (<= 0.7.0) and/or `knitr` (<= 1.33), you will need to load the `targets` package in the R Markdown document in order for Target Markdown code chunks to work.
+Remove the `_targets_r` directory previously written by non-interactive runs of the report. Otherwise, the pipeline may contain superfluous targets.
 
-```{r}
+```{r unscript}
 library(targets)
-```
-
-Near the top of the document, you may also wish to remove the `_targets_r` directory previously written by non-interactive runs of the report. Otherwise, your pipeline may contain superfluous targets.
-
-```{r}
-library(targets)
+library(tarchetypes)
 tar_unscript()
 ```
 
 # Globals
 
-We first define some global options/functions common to all targets. The function below plots a histogram of ozone concentrations, and our histogram target will need it.
+Run Matlab from the command line using this command:
+```
+% matlab -nodesktop -nosplash -useStartupFolderPref -r MatlabServer
+```
 
-```{targets example-globals, tar_globals = TRUE}
+```{targets packages-global, tar_globals = TRUE}
 options(tidyverse.quiet = TRUE)
-tar_option_set(packages = c("biglm", "dplyr", "ggplot2", "readr", "tidyr"))
-create_plot <- function(data) {
-  ggplot(data) +
-    geom_histogram(aes(x = Ozone), bins = 12) +
-    theme_gray(24)
+tar_option_set(packages = c("tidyverse", "R.matlab", "here", "tarchetypes"))
+
+rawdatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview"
+processeddatapath <- "processed_data"
+
+source("code/matlab_commands.R")
+```
+
+```{targets matlab-global, tar_globals = TRUE}
+matlab <- R.matlab::Matlab()
+
+if (!open(matlab)) {
+  cli::cli_alert_danger("Could not connect to MATLAB server")
+  throw("Could not connect to MATLAB server")
 }
+cli::cli_alert_info("Connected to MATLAB: {matlab}")
 ```
 
 # Targets
 
-Our first target borrows the `airquality` dataset built into base R.
-
-```{targets raw-data}
-tar_target(raw_data, airquality)
-```
-
-Our next targets preprocess the data, make a histogram, and fit a model.
-
-```{targets downstream-targets}
+```#{targets calibration}
 list(
-  tar_target(data, raw_data %>% filter(!is.na(Ozone))),
-  tar_target(hist, create_plot(data))
+  tar_target(calib_images_file, 
+             command = "raw_data/calibration2022_06_16_files.csv", 
+             format = "file")
+  tar_target(calib_images,
+             read_csv(calib_images_file))
+  tar_target(calibfile,
+             command = calibrate_bottomview(file.path(rawdatapath, "calibrations"),
+                                            calib_images$right_images,
+                                            calib_images$left_images,
+                                            calib_images$square_size_mm[[1]],
+                                            here("processed_data", 
+                                                 "TE_WHOI_2022_bottomview", 
+                                                 "calibrations", 
+                                                 "TE_06_16_2022_1655_calibration.mat")),
+             format = "file"))
 )
 ```
 
-Set the `tar_simple` chunk option to `TRUE` to define a single target with the command in the code chunk. The chunk below only contains `biglm(Ozone ~ Wind + Temp, data)` in the source, but because `tar_simple` is `TRUE`, it is shorthand for `tar_target(name = fit, command = biglm(Ozone ~ Wind + Temp, data))`. All other arguments to `tar_target()` are set to their default values (configurable with `tar_option_set()`).
-
-```{targets fit, tar_simple = TRUE}
-biglm(Ozone ~ Wind + Temp, data)
+```{targets calibration}
+tarchetypes::tar_plan(
+  calib_images_file = "raw_data/calibration2022_06_16_files.csv", 
+  calib_images = read_csv(calib_images_file),
+  calibfile = calibrate_bottomview(rawdatapath,
+                                   calib_images$right_images,
+                                   calib_images$left_images,
+                                   calib_images$square_size_mm[[1]],
+                                   here("processed_data", 
+                                        "TE_WHOI_2022_bottomview", 
+                                        "calibrations", 
+                                        "TE_06_16_2022_1655_calibration.mat"))
+)
 ```
 
 # Pipeline
 
 If you ran all the `{targets}` chunks in non-interactive mode, then your R scripts are set up to run the pipeline.
 
-```{r}
+```{r tar_make}
 tar_make()
 ```
 
 # Output
 
-You can retrieve results from the `_targets/` data store using `tar_read()` or `tar_load()`.
-
-```{r, message = FALSE}
-library(biglm)
-tar_read(fit)
-```
-
-```{r}
-tar_read(hist)
-```
-
 The `targets` dependency graph helps your readers understand the steps of your pipeline at a high level.
 
-```{r}
+```{r tar_visnetwork}
 tar_visnetwork()
 ```
 
