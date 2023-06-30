@@ -1,6 +1,6 @@
-function calibrate_bottomview(calibFilePath, imageFileNames, squareSize, outputfile)
+function calibrate_bottomview(calibpath, imageFileNames1, imageFileNames2, squareSize, outputfile)
 
-% Define images to process
+% % Define images to process
 % calibFilePath = '/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images';
 % 
 % imageFileNames1 = {'Right_Cam1.tif',...
@@ -50,21 +50,21 @@ function calibrate_bottomview(calibFilePath, imageFileNames, squareSize, outputf
 %     'Left_Cam22.tif',...
 %     };
 
-for i = 1:size(imageFileNames,1)
-    imageFileNames{i,1} = fullfile(calibFilePath, imageFileNames{i,1});
-    imageFileNames{i,2} = fullfile(calibFilePath, imageFileNames{i,2});
+for i = 1:length(imageFileNames1)
+    imageFileNames1{i} = fullfile(calibpath, imageFileNames1{i});
+    imageFileNames2{i} = fullfile(calibpath, imageFileNames2{i});
 end
 
 % Detect calibration pattern in images
 detector = vision.calibration.stereo.CheckerboardDetector();
-[imagePoints, imagesUsed] = detectPatternPoints(detector, imageFileNames(:,1), imageFileNames(:,2));
+[imagePoints, imagesUsed] = detectPatternPoints(detector, imageFileNames1, imageFileNames2);
 
 % Generate world coordinates for the planar patten keypoints
 % squareSize = 2.885000e+01;  % in units of 'millimeters'
 worldPoints = generateWorldPoints(detector, 'SquareSize', squareSize);
 
 % Read one of the images from the first stereo pair
-I1 = imread(imageFileNames{1,1});
+I1 = imread(imageFileNames1{1});
 [mrows, ncols, ~] = size(I1);
 
 % Calibrate the camera
@@ -75,10 +75,10 @@ I1 = imread(imageFileNames{1,1});
     'ImageSize', [mrows, ncols]);
 
 % View reprojection errors
-h1=figure; showReprojectionErrors(stereoParams);
+% h1=figure; showReprojectionErrors(stereoParams);
 
 % Visualize pattern locations
-h2=figure; showExtrinsics(stereoParams, 'CameraCentric');
+% h2=figure; showExtrinsics(stereoParams, 'CameraCentric');
 
 % Display parameter estimation errors
 displayErrors(estimationErrors, stereoParams);
@@ -89,4 +89,4 @@ displayErrors(estimationErrors, stereoParams);
 
 save(outputfile, ...
     "stereoParams", "estimationErrors", "imagePoints", "worldPoints", ...
-    "imageFileNames");
+    "imageFileNames1", "imageFileNames2");

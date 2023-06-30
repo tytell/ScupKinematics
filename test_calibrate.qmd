@@ -1,0 +1,63 @@
+---
+title: "test_calibration"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(R.matlab)
+library(here)
+```
+
+```{r}
+source(here("code", "matlab_commands.R"))
+```
+
+## Matlab server
+
+Start MATLAB externally.
+
+If it hasn't been done already, add the 'externals' subdirectory to the MATLAB path.
+
+```{r}
+print(system.file("externals", package = "R.matlab"))
+```
+
+Then, within Matlab, run the command `MatlabServer`.
+
+# Test the functions
+
+## Globals
+
+```{r}
+# rawdatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview"
+rawdatapath <- "/Users/etytel01/Documents/2023/Scup kinematics/raw_data/TE_WHOI_2022_bottomview"
+matlabtempdir <- "_matlab"
+```
+
+```{r}
+matlab <- Matlab()
+
+if (!open(matlab)) {
+  cli_alert_danger("Could not connect to MATLAB server")
+  throw("Could not connect to MATLAB server")
+}
+cli_alert_info("Connected to MATLAB: {matlab}")
+```
+
+## Run things
+
+```{r}
+calib_images_file <- "raw_data/calibration2022_06_16_files.csv"
+calib_images <- read_csv(calib_images_file)
+calibrate_bottomview_m <- "code/calibrate_bottomview.m"
+```
+
+```{r}
+calibrate_bottomview(calibrate_bottomview_m,
+                     rawdatapath, 
+                     calib_images$right_images, calib_images$left_images,
+                     calib_images$square_size_mm[[1]], 
+                     here("processed_data", "TE_WHOI_2022_bottomview", "calibrations", "TE_06_16_2022_1655_calibration.mat"))
+```

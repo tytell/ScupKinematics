@@ -2,3 +2,8 @@
 renv/settings.json
 ScupKinematics.Rproj
 *.asv
+_matlab
+_targets
+processed_data
+raw_data
+.Rhistory
