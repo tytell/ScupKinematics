@@ -63,4 +63,24 @@ calibrate_bottomview <- function(matlabfile,
   
   outputfile
 }
+
+triangulate_bottomview <- function(matlabfile, filenames, calibfile, outputfile,
+                                   matlabdeps)
+{
+  cli_alert_info("filenames = {filenames}")
   
+  filenamestr <- map(filenames, \(str) glue("'{str}'")) |> 
+    paste(collapse = ',')
+  
+  matlabfile <- basename(matlabfile) |> 
+    tools::file_path_sans_ext()
+  
+  run_matlab_command(c(
+    glue("calibfile = '{calibfile}';"),
+    glue("filenames = {{{filenamestr}}};"),
+    glue("outputfile = '{outputfile}';"),
+    glue("{matlabfile}(filenames, calibfile, outputfile);")
+  ),
+  file.path(matlabtempdir, "run_triangulate_bottomview.m"), outputfile
+  )
+}
