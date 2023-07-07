@@ -1,0 +1,154 @@
+---
+title: "calibration"
+format: html
+jupyter: python3
+---
+
+```{python}
+import os, sys
+import cv2 as cv
+import numpy as np
+```
+
+
+```{python}
+imageFilePath = r'/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images'
+
+calibFilePath = r'/Users/etytel01/Documents/2023/ScupKinematics/processed_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_calibration.mat'
+
+pointsFilePath = r'/Users/etytel01/Documents/2023/ScupKinematics/processed_data/TE_WHOI_2022_bottomview/calibrations/detectedPoints.csv'
+
+gridsize = (6,8)
+squaresize = 28.85000  # mm
+```
+
+
+```{python}
+imageFileNames1 = ['Right_Cam1.tif',
+    'Right_Cam2.tif',
+    'Right_Cam3.tif',
+    'Right_Cam4.tif',
+    'Right_Cam5.tif',
+    'Right_Cam6.tif',
+    'Right_Cam7.tif',
+    'Right_Cam8.tif',
+    'Right_Cam9.tif',
+    'Right_Cam10.tif',
+    'Right_Cam11.tif',
+    'Right_Cam12.tif',
+    'Right_Cam13.tif',
+    'Right_Cam14.tif',
+    'Right_Cam15.tif',
+    'Right_Cam16.tif',
+    'Right_Cam17.tif',
+    'Right_Cam18.tif',
+    'Right_Cam19.tif',
+    'Right_Cam20.tif',
+    'Right_Cam21.tif',
+    'Right_Cam22.tif']
+
+imageFileNames2 = ['Left_Cam1.tif',
+    'Left_Cam2.tif',
+    'Left_Cam3.tif',
+    'Left_Cam4.tif',
+    'Left_Cam5.tif',
+    'Left_Cam6.tif',
+    'Left_Cam7.tif',
+    'Left_Cam8.tif',
+    'Left_Cam9.tif',
+    'Left_Cam10.tif',
+    'Left_Cam11.tif',
+    'Left_Cam12.tif',
+    'Left_Cam13.tif',
+    'Left_Cam14.tif',
+    'Left_Cam15.tif',
+    'Left_Cam16.tif',
+    'Left_Cam17.tif',
+    'Left_Cam18.tif',
+    'Left_Cam19.tif',
+    'Left_Cam20.tif',
+    'Left_Cam21.tif',
+    'Left_Cam22.tif']
+
+imagefiles_right = [os.path.join(imageFilePath, f1) for f1 in imageFileNames1]
+imagefiles_left = [os.path.join(imageFilePath, f1) for f1 in imageFileNames2]
+
+```
+
+
+```{python}
+criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
+  
+def get_checker(images, gridsize, criteria):
+    #coordinates of squares in the checkerboard world space
+    objp = np.zeros((np.prod(gridsize),3), np.float32)
+    objp[:,:2] = np.mgrid[0:gridsize[0],0:gridsize[1]].T.reshape(-1,2)
+    objp = squaresize * objp
+
+    imgpoints = []
+    objpoints = []
+    goodim = []
+
+    for f in images:
+        img = cv.imread(f)
+        gray = img[:,:,0]
+
+        ret, corners = cv.findChessboardCorners(gray, gridsize, None)
+
+        if ret:
+            corners = cv.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+
+            objpoints.append(objp)
+            imgpoints.append(corners)
+            goodim.append(True)
+        else:
+            goodim.append(False)
+
+    return imgpoints, objpoints, gray.shape, goodim
+
+imgpoints_left, objpoints, imgsize, goodim1 = get_checker(imagefiles_left, gridsize, criteria)
+imgpoints_right, objpoints, imgsize, goodim2 = get_checker(imagefiles_right, gridsize, criteria)
+
+ret1, mtx1, dist1, rvecs1, tvecs1 = cv.calibrateCamera(objpoints, imgpoints_left, imgsize, None, None)
+ret2, mtx2, dist2, rvecs2, tvecs2 = cv.calibrateCamera(objpoints, imgpoints_right, imgsize, None, None)
+
+print('rmse1:', ret1)
+print('rmse1:', ret2)
+```
+
+imgpoints_left = []
+imgpoints_right = []
+for f1, f2 in imagefiles:
+    img1 = cv.imread(f1)
+    gray1 = img1[:,:,0]
+    img2 = cv.imread(f2)
+    gray2 = img2[:,:,0]
+
+    ret1, corners1 = cv.findChessboardCorners(gray1, gridsize, None)
+    ret2, corners2 = cv.findChessboardCorners(gray2, gridsize, None)
+
+    if ret1 and ret2:
+        print("Found!")
+
+        corners1 = cv.cornerSubPix(gray1, corners1, (11, 11), (-1, -1), criteria)
+        corners2 = cv.cornerSubPix(gray2, corners2, (11, 11), (-1, -1), criteria)
+
+        # cv.drawChessboardCorners(img1, gridsize, corners1, ret1)
+        # cv.drawChessboardCorners(img2, gridsize, corners2, ret2)
+
+        # cv.imshow('img1', img1)
+        # cv.imshow('img2', img2)
+        # k = cv.waitKey(0)
+
+        objpoints.append(objp)
+        imgpoints_left.append(corners2)
+        imgpoints_right.append(corners1)
+    
+ret, mtx, dist, rvecs, tvecs = cv.calibrateCamera(objpoints, imgpoints, (width, height), None, None)
+    print('rmse:', ret)
+    print('camera matrix:\n', mtx)
+    print('distortion coeffs:', dist)
+    print('Rs:\n', rvecs)
+    print('Ts:\n', tvecs)
+ 
+    return mtx, dist
