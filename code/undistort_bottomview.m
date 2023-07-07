@@ -79,7 +79,11 @@ ox1 = oxy1(:,:,1);
 oy1 = oxy1(:,:,2);
 
 good = ~isnan(ox1) & ~isnan(oy1);
-oxyu1good = undistortPoints(cat(2, ox1(good), oy1(good)), params);
+oxygood = zeros(numel(ox1(good)), 2);
+oxygood(:,1) = ox1(good);
+oxygood(:,2) = oy1(good);
+
+oxyu1good = undistortPoints(oxygood, params);
 
 ox1u = NaN(size(ox1));
 oy1u = NaN(size(oy1));

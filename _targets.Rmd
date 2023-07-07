@@ -1,0 +1,126 @@
+---
+title: "Target Markdown"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+```{r}
+library(targets)
+library(tarchetypes)
+library(here)
+```
+
+# Setup
+
+This removes the auto-generated `_targets.R` file.
+
+```{r}
+tar_unscript()
+```
+
+# Globals
+
+We first define some global options/functions common to all targets. 
+
+```{targets global-paths, tar_globals = TRUE}
+library(tarchetypes)
+
+options(tidyverse.quiet = TRUE)
+tar_option_set(packages = c("tidyverse", "here", "R.utils"))
+
+#videodatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview"
+videodatapath <- "/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/experiments"
+rawdatapath <- "raw_data"
+processeddatapath <- "processed_data"
+```
+
+This is a simple function to stop the process if a Matlab script needs to be run.
+It looks to see if the script is newer than its output file, and if it is, it
+stops the run.
+```{targets run-matlab-fcn, tar_globals = TRUE}
+prompt_run_matlab <- function(matlabscript, outputfile, ...)
+{
+  if (!file.exists(outputfile) || (file.mtime(matlabscript) > file.mtime(outputfile))) {
+    cli::cli_alert_danger("In MATLAB, run {matlabscript}")
+    tar_cancel()
+  }
+  outputfile
+}
+```
+
+# Targets
+
+Matlab script that runs the calibration and generates the `.mat` file that has
+the calibration parameters.
+```{targets calibration}
+list(
+  tar_file(calibration_m, here("code", "bottomview_06_16_2022_calib.m")),
+  tar_target(calibration, 
+             prompt_run_matlab(calibration_m,
+                               here("processed_data", 
+                                    "TE_WHOI_2022_bottomview/calibrations",
+                                    "TE_06_16_2022_1655_calibration.mat")))
+)
+```
+
+```{targets scan-bottomview-files, tar_globals = TRUE}
+scan_bottomview_files <- function(rootdir, outputfile)
+{
+  tar_assert_file(rootdir)
+  indivdirs <- Sys.glob(file.path(rootdir, '*', 'scup*'))
+
+  allfiles <-
+    map(indivdirs, 
+        \(d) tibble(fullfilepath = 
+                      list.files(d, pattern = 'scup\\d{2}_[0123456789.]+hz_2022Y_.+\\.xlsx?',
+                                 recursive = FALSE, full.names = TRUE))) |> 
+    list_rbind() 
+  
+  allfiles <-
+    allfiles |> 
+    mutate(relpath = getRelativePath(fullfilepath, relativeTo = rootdir),
+           filename = basename(fullfilepath)) |> 
+    separate_wider_regex(filename, c(id = "scup\\d+", "_",
+                                     speed_Hz = "[0123456789.]+", "hz_",
+                                     datetime = "2022Y_.+", "\\.xlsx?")) |> 
+    mutate(datetime = parse_date_time(datetime, orders = "%YY_%mM_%dD_%Hh_%Mm_%Ss", 
+                                      exact = TRUE,
+                                      tz = "America/New_York"))
+  if (nrow(allfiles) == 0)
+    cli::cli_alert_warning("Found 0 files!")
+  else
+    cli::cli_alert_success("Found {nrow(allfiles)} files")
+  
+  write_csv(allfiles, outputfile)
+  outputfile  
+}
+```
+
+
+```{targets triangulate}
+list(
+  tar_file(filelist, scan_bottomview_files(videodatapath, 
+                                         here(processeddatapath, "all_bottomview_files.csv"))),
+  tar_file(triangulate_m, "code/triangulate_all_bottomview_data.m"),
+  tar_target(data3d, 
+             prompt_run_matlab(triangulate_m,
+                               here(processeddatapath, "data3d.csv"),
+                               filelist, calibration))
+)
+```
+
+# Pipeline
+
+```{r eval=FALSE}
+tar_visnetwork()
+```
+
+If you ran all the `{targets}` chunks in non-interactive mode, then your R scripts are set up to run the pipeline.
+
+```{r eval=FALSE}
+tar_make()
+```
+

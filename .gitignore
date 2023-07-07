@@ -7,3 +7,6 @@ _targets
 processed_data
 raw_data
 .Rhistory
+_targets_r
+.vscode
+_targets.html
