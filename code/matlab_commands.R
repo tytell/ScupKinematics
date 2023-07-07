@@ -1,86 +1,76 @@
 # require(R.matlab)
-require(cli)
-require(glue)
-require(stringr)
-require(readr)
-require(lubridate)
+# require(targets)
+# require(tidyverse)
+# require(lubridate)
 
-run_matlab_command <- function(cmd, scriptname, outputfile, timeout = 100)
+prompt_run_matlab <- function(matlabscript, matlabsym, outputfile)
 {
-  write_lines(cmd, scriptname)
+  outputbasename <- basename(outputfile)
   
-  if (!file.exists(outputfile))
-    oldtime <- NA
-  else
-    oldtime <- lubridate::ymd_hms(file.info(outputfile)$mtime)
+  if (!file.exists(outputfile) || (file.mtime(matlabscript) > file.mtime(outputfile))) {
+    cli::cli_alert_info("{outputbasename} is out of date. In MATLAB run {matlabsym} to update.")
+    tar_cancel()
+  } else {
+    outputfile
+  }
+}
+
+check_older <- function(script, outputfile) 
+{
+  if (!file.exists(outputfile) || (file.mtime(script) > file.mtime(outputfile))) {
+    cli::cli_alert_info("{outputbasename} is out of date. In MATLAB run {matlabsym} to update.")
+    TRUE
+  } else {
+    FALSE
+  }
+}
+
+tar_matlab_script <- function(name, matlabscript, outputfile, matlabdeps = NULL)
+{
+  matlabsym <- basename(matlabscript) |> 
+    tools::file_path_sans_ext() |> 
+    paste0("_m")
   
-  cli_alert_info("Please run {scriptname} in Matlab.")
+  name_read <- deparse(rlang::enexpr(name))
   
-  done <- FALSE
-  start <- lubridate::now()
-  cli_progress_bar("Waiting for Matlab", 
-                   format = "{cli::pb_name} [{cli::pb_elapsed}]")
-  while (!done && (lubridate::now() - start < timeout)) {
-    if (file.exists(outputfile)) {
-      newtime <- lubridate::ymd_hms(file.info(outputfile)$mtime)
-      done <- newtime > oldtime
-    }
-    Sys.sleep(1)
-    cli_progress_update()
+  if (is.null(matlabdeps)) {
+    deps <- c(matlabsym)
+  } else {
+    deps <- c(matlabsym, matlabdeps)
   }
   
-  if (done)
-    cli_progress_done()
-  else
-    cli_progress_done(result = "failed")
-  
-  tar_cancel(!done)
-}
-
-calibrate_bottomview <- function(matlabfile, 
-  calibpath, imageFileNames1, imageFileNames2,
-                                 squaresize, outputfile)
-{
-  # put each file name in the image file lists inside single quotes, then
-  # separate them with commas
-  imageFileNames1str <- map(imageFileNames1, \(str) glue("'{str}'")) |> 
-    paste(collapse = ",")
-  imageFileNames2str <- map(imageFileNames2, \(str) glue("'{str}'")) |> 
-    paste(collapse = ",")
-  
-  matlabfile <- basename(matlabfile) |> 
-    tools::file_path_sans_ext()
-  
-  run_matlab_command(c(
-    glue("calibpath = '{calibpath}';"),
-    glue("imageFileNames1 = {{{imageFileNames1str}}};"),
-    glue("imageFileNames2 = {{{imageFileNames2str}}};"),
-    glue("outputfile = '{outputfile}';"),
-    glue("{matlabfile}(calibpath, imageFileNames1, imageFileNames2, {squaresize}, outputfile);")
-  ),
-  file.path(matlabtempdir, "run_calibrate_bottomview.m"), outputfile
+  list(
+    tar_target_raw(matlabsym, matlabscript, format = "file"),
+    tar_target_raw(name_read, prompt_run_matlab(matlabscript, matlabsym, outputfile), 
+                   format = "file",
+                   deps = deps,
+                   error = "null")
   )
-  
-  outputfile
 }
 
-triangulate_bottomview <- function(matlabfile, filenames, calibfile, outputfile,
-                                   matlabdeps)
+tar_matlab_data <- function(name, matlabscript, outputfile,
+                            matlabdeps = NULL)
 {
-  cli_alert_info("filenames = {filenames}")
+  matlabsym <- basename(matlabscript) |> 
+    tools::file_path_sans_ext() |> 
+    paste0("_m")
+  outputsym <- basename(outputfile) |> 
+    make.names()
+  name_read <- deparse(rlang::enexpr(name))
   
-  filenamestr <- map(filenames, \(str) glue("'{str}'")) |> 
-    paste(collapse = ',')
-  
-  matlabfile <- basename(matlabfile) |> 
-    tools::file_path_sans_ext()
-  
-  run_matlab_command(c(
-    glue("calibfile = '{calibfile}';"),
-    glue("filenames = {{{filenamestr}}};"),
-    glue("outputfile = '{outputfile}';"),
-    glue("{matlabfile}(filenames, calibfile, outputfile);")
-  ),
-  file.path(matlabtempdir, "run_triangulate_bottomview.m"), outputfile
+  if (is.null(matlabdeps)) {
+    deps <- c(matlabsym)
+  } else {
+    deps <- c(matlabsym, matlabdeps)
+  }
+
+  list(
+    tar_target_raw(matlabsym, matlabscript, format = "file"),
+    tar_target_raw(outputsym, 
+                   prompt_run_matlab(matlabscript, matlabsym, outputfile), 
+                   format = "file",
+                   deps = deps,
+                   error = "null"),
+    tar_target_raw(name_read, read_csv(outputfile), deps = c(outputsym))
   )
 }
