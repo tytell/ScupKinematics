@@ -8,6 +8,7 @@ jupyter: python3
 import os, sys
 import cv2 as cv
 import numpy as np
+import pandas as pd
 ```
 
 
@@ -22,6 +23,7 @@ gridsize = (6,8)
 squaresize = 28.85000  # mm
 ```
 
+Very useful tutorial: https://temugeb.github.io/opencv/python/2021/02/02/stereo-camera-calibration-and-triangulation.html
 
 ```{python}
 imageFileNames1 = ['Right_Cam1.tif',
@@ -75,6 +77,10 @@ imagefiles_left = [os.path.join(imageFilePath, f1) for f1 in imageFileNames2]
 
 ```
 
+```{python}
+nimg = len(imagefiles_right)
+npt = np.prod(gridsize)
+```
 
 ```{python}
 criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
@@ -106,14 +112,55 @@ def get_checker(images, gridsize, criteria):
 
     return imgpoints, objpoints, gray.shape, goodim
 
-imgpoints_left, objpoints, imgsize, goodim1 = get_checker(imagefiles_left, gridsize, criteria)
-imgpoints_right, objpoints, imgsize, goodim2 = get_checker(imagefiles_right, gridsize, criteria)
+imgpoints_left, objpoints_left, imgsize, goodim1 = get_checker(imagefiles_left, gridsize, criteria)
+imgpoints_right, objpoints_right, imgsize, goodim2 = get_checker(imagefiles_right, gridsize, criteria)
 
-ret1, mtx1, dist1, rvecs1, tvecs1 = cv.calibrateCamera(objpoints, imgpoints_left, imgsize, None, None)
-ret2, mtx2, dist2, rvecs2, tvecs2 = cv.calibrateCamera(objpoints, imgpoints_right, imgsize, None, None)
+ret1, mtx1, dist1, rvecs1, tvecs1 = cv.calibrateCamera(objpoints_left, imgpoints_left, imgsize, None, None)
+ret2, mtx2, dist2, rvecs2, tvecs2 = cv.calibrateCamera(objpoints_right, imgpoints_right, imgsize, None, None)
 
 print('rmse1:', ret1)
 print('rmse1:', ret2)
+```
+
+```{python}
+pts = pd.read_csv(pointsFilePath)
+```
+
+```{python}
+imgpts_left = np.concatenate((np.array(pts["ximL"]).reshape((nimg, npt, 1, 1)),
+            np.array(pts["yimL"]).reshape((nimg, npt, 1, 1))),
+            axis = 3).astype(np.float32)
+imgpts_right = np.concatenate((np.array(pts["ximR"]).reshape((nimg, npt, 1, 1)),
+            np.array(pts["yimR"]).reshape((nimg, npt, 1, 1))),
+            axis = 3).astype(np.float32)
+
+imgpts_left = [ipts1 for ipts1 in imgpts_left]
+imgpts_right = [ipts1 for ipts1 in imgpts_right]
+
+objpts = np.concatenate((np.array(pts["xw_mm"]).reshape((nimg, npt, 1)),
+            np.array(pts["yw_mm"]).reshape((nimg, npt, 1)),
+            np.zeros((nimg, npt, 1))),
+            axis = 2).astype(np.float32)
+objpts = [opts1 for opts1 in objpts]
+
+retL, mtxL, distL, rvecsL, tvecsL = cv.calibrateCamera(objpts, imgpts_left, imgsize, None, None)
+
+print("LEFT:")
+print('rmse:', retL)
+print('camera matrix:\n', mtxL)
+
+retR, mtxR, distR, rvecsR, tvecsR = cv.calibrateCamera(objpts, imgpts_right, imgsize, None, None)
+
+print("RIGHT:")
+print('rmse:', retR)
+print('camera matrix:\n', mtxR)
+```
+
+```{python}
+stereocalibration_flags = cv.CALIB_FIX_INTRINSIC
+
+ret, CM1, dist1, CM2, dist2, R, T, E, F = cv.stereoCalibrate(objpts, imgpts_right, imgpts_left, mtxR, distR,
+mtxL, distL, imgsize, criteria = criteria, flags = stereocalibration_flags)
 ```
 
 imgpoints_left = []
