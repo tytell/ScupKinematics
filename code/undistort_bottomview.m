@@ -3,6 +3,9 @@ function tab = undistort_bottomview(tab, stereoParams, varargin)
 opt.nstep = 10;
 opt = parsevarargin(opt, varargin, 3);
 
+roiC1 = table2array(tab(1,8:11));
+roiC2 = table2array(tab(1,12:15));
+
 txyC1 = cat(2, tab.tailC1x, tab.tailC1y);
 txyC2 = cat(2, tab.tailC2x, tab.tailC2y);
 
@@ -13,6 +16,17 @@ oxyRC2 = cat(3, tab.xRC2,  tab.yRC2);
 
 hxyC1 = cat(2, tab.headC1x, tab.headC1y);
 hxyC2 = cat(2, tab.headC2x, tab.headC2y);
+
+% check that points are inside the ROI
+txyC1 = NaNoutsideROI(txyC1, roiC1);
+txyC2 = NaNoutsideROI(txyC2, roiC2);
+hxyC1 = NaNoutsideROI(hxyC1, roiC1);
+hxyC2 = NaNoutsideROI(hxyC2, roiC2);
+
+oxyLC1 = NaNoutlineOutsideROI(oxyLC1, roiC1);
+oxyRC1 = NaNoutlineOutsideROI(oxyRC1, roiC1);
+oxyLC2 = NaNoutlineOutsideROI(oxyLC2, roiC1);
+oxyRC2 = NaNoutlineOutsideROI(oxyRC2, roiC1);
 
 % correct for camera distortion
 indgood = find(all(~isnan(hxyC1), 2) & ...
@@ -30,7 +44,7 @@ oxyRC1u = NaN(size(oxyRC1));
 oxyLC2u = NaN(size(oxyLC2));
 oxyRC2u = NaN(size(oxyRC2));
 
-progress(0, length(indgood), "Undistorting...");
+% progress(0, length(indgood), "Undistorting...");
 for i = 1:opt.nstep:length(indgood)
     if i+opt.nstep > length(indgood)
         k = indgood(i:end);
@@ -48,10 +62,10 @@ for i = 1:opt.nstep:length(indgood)
     oxyLC2u(k,:,:) = undistort_outline1(oxyLC2(k,:,:), stereoParams.CameraParameters2);
     oxyRC2u(k,:,:) = undistort_outline1(oxyRC2(k,:,:), stereoParams.CameraParameters2);
 
-    progress(i);
+%    progress(i);
 end
 
-progress(length(indgood));
+% progress(length(indgood));
 
 newcols = cat(2, txyC1u, hxyC1u, txyC2u, hxyC2u);
 newcols = num2cell(newcols,1);
@@ -92,4 +106,21 @@ ox1u(good) = oxyu1good(:,1);
 oy1u(good) = oxyu1good(:,2);
 
 oxy1u = cat(3, ox1u, oy1u);
+
+
+function xy = NaNoutsideROI(xy, roi)
+
+good = xy(:,1) > roi(1) & xy(:,1) < roi(3) & ...
+    xy(:,2) > roi(2) & xy(:,2) < roi(4);
+xy(~good,:) = NaN;
+
+
+function oxy = NaNoutlineOutsideROI(oxy, roi)
+
+good = oxy(:,:,1) > roi(1) & oxy(:,:,1) < roi(3) & ...
+    oxy(:,:,2) > roi(2) & oxy(:,:,2) < roi(4);
+
+good = repmat(good, [1 1 2]);
+oxy(~good) = NaN;
+
 

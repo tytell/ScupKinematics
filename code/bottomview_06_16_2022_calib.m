@@ -2,8 +2,10 @@
 
 %% Define images to process
 %imageFilePath = '/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images';
-imageFilePath = '/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images';
-calibFilePath = '/Users/etytel01/Documents/2023/ScupKinematics/processed_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_calibration.mat';
+% imageFilePath = '/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images';
+imageFilePath = 'Z:\WHOI-2022\Data from Erik Anderson\TE_WHOI_2022_bottomview\calibrations\TE_06_16_2022_1655_stereo_calib_images';
+% calibFilePath = '/Users/etytel01/Documents/2023/ScupKinematics/processed_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_calibration.mat';
+calibFilePath = 'D:\ScupKinematics\processed_data\TE_WHOI_2022_bottomview\calibrations\TE_06_16_2022_1655_calibration.mat';
 
 imageFileNames1 = {'Right_Cam1.tif',...
     'Right_Cam2.tif',...
@@ -67,27 +69,27 @@ worldPoints = generateWorldPoints(detector, 'SquareSize', squareSize);
 
 %% Save out detected points
 
-ix1 = imagePoints(:,1,:,1);
-iy1 = imagePoints(:,2,:,1);
-ix2 = imagePoints(:,1,:,2);
-iy2 = imagePoints(:,2,:,2);
-
-nimg = sum(imagesUsed);
-
-img1 = repmat(reshape(imageFileNames1(imagesUsed), [1 nimg]), size(ix1,1), 1);
-img2 = repmat(reshape(imageFileNames2(imagesUsed), [1 nimg]), size(ix1,1), 1);
-
-wx = repmat(worldPoints(:,1), [1 nimg]);
-wy = repmat(worldPoints(:,2), [1 nimg]);
-
-tab = table(ix1(:), iy1(:), ix2(:), iy2(:), wx(:), wy(:), img1(:), img2(:), ...
-    'VariableNames',{'ximR', 'yimR', 'ximL', 'yimL', 'xw_mm', 'yw_mm', 'imR', 'imL'});
-tab.myscript = repmat(mfilename, [height(tab) 1]);
-tab.myscriptmd5 = repmat(GetMD5(strcat(mfilename('fullpath'), '.m'), 'File'), [height(tab) 1]);
-
-[pn, fn, ~] = fileparts(calibFilePath);
-
-writetable(tab, fullfile(pn, "detectedPoints.csv"));
+% ix1 = imagePoints(:,1,:,1);
+% iy1 = imagePoints(:,2,:,1);
+% ix2 = imagePoints(:,1,:,2);
+% iy2 = imagePoints(:,2,:,2);
+% 
+% nimg = sum(imagesUsed);
+% 
+% img1 = repmat(reshape(imageFileNames1(imagesUsed), [1 nimg]), size(ix1,1), 1);
+% img2 = repmat(reshape(imageFileNames2(imagesUsed), [1 nimg]), size(ix1,1), 1);
+% 
+% wx = repmat(worldPoints(:,1), [1 nimg]);
+% wy = repmat(worldPoints(:,2), [1 nimg]);
+% 
+% tab = table(ix1(:), iy1(:), ix2(:), iy2(:), wx(:), wy(:), img1(:), img2(:), ...
+%     'VariableNames',{'ximR', 'yimR', 'ximL', 'yimL', 'xw_mm', 'yw_mm', 'imR', 'imL'});
+% tab.myscript = repmat(mfilename, [height(tab) 1]);
+% tab.myscriptmd5 = repmat(GetMD5(strcat(mfilename('fullpath'), '.m'), 'File'), [height(tab) 1]);
+% 
+% [pn, fn, ~] = fileparts(calibFilePath);
+% 
+% writetable(tab, fullfile(pn, "detectedPoints.csv"));
 
 %% Do the calibration
 % Read one of the images from the first stereo pair
