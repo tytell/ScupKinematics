@@ -31,8 +31,9 @@ library(tarchetypes)
 options(tidyverse.quiet = TRUE)
 tar_option_set(packages = c("tidyverse", "here", "R.utils"))
 
+videodatapath <- "Z:\\WHOI-2022\\Data from Erik Anderson\\TE_WHOI_2022_bottomview\\experiments"
 #videodatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview"
-videodatapath <- "/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/experiments"
+#videodatapath <- "/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/experiments"
 rawdatapath <- "raw_data"
 processeddatapath <- "processed_data"
 ```
@@ -48,6 +49,21 @@ prompt_run_matlab <- function(matlabscript, outputfile, ...)
     tar_cancel()
   }
   outputfile
+}
+
+check_matlab_processing <- function(matlabscript, processfile, ...)
+{
+  if (!file.exists(processfile) || (file.mtime(matlabscript) > file.mtime(processfile))) {
+    cli::cli_alert_danger("In MATLAB, run {matlabscript}")
+    tar_cancel()
+  } else {
+    processdata <- read_csv(processfile, show_col_types = FALSE)
+    if (!all(processdata$isprocessed)) {
+      cli::cli_alert_danger("In MATLAB, run {matlabscript}")
+      tar_cancel()
+    }
+  }
+  processfile
 }
 ```
 
@@ -67,10 +83,31 @@ list(
 ```
 
 ```{targets scan-bottomview-files, tar_globals = TRUE}
+count_file_lines <- function(filename, chunksize = 65536) {
+  f <- file(filename, open="rb")
+  
+  nlines <- 0L
+  while (length(chunk <- readBin(f, "raw", chunksize)) > 0) {
+    nlines <- nlines + sum(chunk == as.raw(10L))
+  }
+  close(f)  
+  
+  nlines
+}
+
+make_output_filename <- function(filename)
+{
+  str_c(tools::file_path_sans_ext(filename), "-3D.csv")
+}
+
 scan_bottomview_files <- function(rootdir, outputfile)
 {
   tar_assert_file(rootdir)
   indivdirs <- Sys.glob(file.path(rootdir, '*', 'scup*'))
+  if (length(indivdirs) == 0)
+    cli::cli_alert_warning("Found 0 folders!")
+  else
+    cli::cli_alert_success("Found {length(indivdirs)} folders")
 
   allfiles <-
     map(indivdirs, 
@@ -93,7 +130,14 @@ scan_bottomview_files <- function(rootdir, outputfile)
     cli::cli_alert_warning("Found 0 files!")
   else
     cli::cli_alert_success("Found {nrow(allfiles)} files")
-  
+
+  allfiles <-
+    allfiles |> 
+    mutate(data3dfile = purrr::map_vec(relpath, make_output_filename),
+           filesize = purrr::map_vec(fullfilepath, file.size,
+                                     .progress = "Getting file sizes"),
+           nrows = purrr::map_vec(fullfilepath, count_file_lines,
+                                  .progress = "Getting number of lines"))
   write_csv(allfiles, outputfile)
   outputfile  
 }
@@ -106,8 +150,8 @@ list(
                                          here(processeddatapath, "all_bottomview_files.csv"))),
   tar_file(triangulate_m, "code/triangulate_all_bottomview_data.m"),
   tar_target(data3d, 
-             prompt_run_matlab(triangulate_m,
-                               here(processeddatapath, "data3d.csv"),
+             check_matlab_processing(triangulate_m,
+                               here(processeddatapath, "processed_bottomview_files.csv"),
                                filelist, calibration))
 )
 ```
