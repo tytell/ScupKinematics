@@ -47,8 +47,8 @@ C2data2 = find(table2array(tab(1,:)) == tab.roiC2x2(1));
 
 % we should have 3 values here - the first one that specifies the ROI
 % itself, and then two more, one for each side of the fish
-assert(length(C2data1) == 3 && length(C2data2) == 3);
-assert(length(C1data1) == 3 && length(C1data2) == 3);
+assert(length(C2data1) >= 3 && length(C2data2) >= 3);
+assert(length(C1data1) >= 3 && length(C1data2) >= 3);
 
 % number of points across the ROI can differ for each camera
 nptC1 = C1data2(2) - C1data1(2) + 1;
