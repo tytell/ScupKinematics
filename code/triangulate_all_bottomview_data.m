@@ -85,7 +85,7 @@ for i = todo
         rowsdone = rowsdone + filelist.nrows(i);
         progress(rowsdone);
     catch ME
-        warning("Caught error %s. Skipping file", ME.message);
+        warning(ME.identifier, "Caught error %s. Skipping file", ME.message);
         filelist.isprocessed(i) = false;
         writetable(filelist, outputfile, "Delimiter",",");
     

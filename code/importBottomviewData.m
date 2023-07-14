@@ -30,6 +30,7 @@ opt.startcolumns = {'tsec', 'tsec2', ...
     'V1', 'V2', 'V3', ...
     'tailC1x', 'tailC1y', 'headC1x', 'headC1y', ...
     'tailC2x', 'tailC2y', 'headC2x', 'headC2y'};
+opt.spacing = 20;
 
 opt = parsevarargin(opt, varargin, 2);
 
@@ -39,24 +40,14 @@ tab = readtable(filename, 'FileType', 'delimitedtext', ...
 tab.Properties.VariableNames(1:length(opt.startcolumns)) = ...
     opt.startcolumns;
 
+nptC1 = ceil((tab.roiC1x2(1) - tab.roiC1x1(1)) / opt.spacing);
+nptC2 = ceil((tab.roiC2x2(1) - tab.roiC2x1(1)) / opt.spacing);
+
 C1data1 = find(table2array(tab(1,:)) == tab.roiC1x1(1));
-C1data2 = find(table2array(tab(1,:)) == tab.roiC1x2(1));
-
-C2data1 = find(table2array(tab(1,:)) == tab.roiC2x1(1));
-C2data2 = find(table2array(tab(1,:)) == tab.roiC2x2(1));
-
-% we should have 3 values here - the first one that specifies the ROI
-% itself, and then two more, one for each side of the fish
-assert(length(C2data1) >= 3 && length(C2data2) >= 3);
-assert(length(C1data1) >= 3 && length(C1data2) >= 3);
-
-% number of points across the ROI can differ for each camera
-nptC1 = C1data2(2) - C1data1(2) + 1;
-nptC2 = C2data2(2) - C2data1(2) + 1;
 
 % pull out the xy data sets for each camera
 coorddataC1 = table2array(tab(:,C1data1(2)-1 + (1:nptC1*4)));
-coorddataC2 = table2array(tab(:,C2data1(2)-1 + (1:nptC2*4)));
+coorddataC2 = table2array(tab(:,C1data1(2)-1 + nptC1*4 + (1:nptC2*4)));
 
 tab = tab(:,1:length(opt.startcolumns));
 

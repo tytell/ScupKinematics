@@ -78,7 +78,7 @@ outlinecolsC2 = cat(3, oxyLC2u, oxyRC2u);
 outlinecolsC1 = num2cell(outlinecolsC1,[1 2]);
 outlinecolsC2 = num2cell(outlinecolsC2,[1 2]);
 
-outlinecols = cat(2, outlinecolsC1, outlinecolsC2);
+outlinecols = cat(4, outlinecolsC1, outlinecolsC2);
 
 outlinecols = table(outlinecols{:}, 'VariableNames', ...
     {'xLC1u','yLC1u','xRC1u','yRC1u',...
@@ -92,18 +92,22 @@ function oxy1u = undistort_outline1(oxy1, params)
 ox1 = oxy1(:,:,1);
 oy1 = oxy1(:,:,2);
 
-good = ~isnan(ox1) & ~isnan(oy1);
-oxygood = zeros(numel(ox1(good)), 2);
-oxygood(:,1) = ox1(good);
-oxygood(:,2) = oy1(good);
-
-oxyu1good = undistortPoints(oxygood, params);
-
 ox1u = NaN(size(ox1));
 oy1u = NaN(size(oy1));
 
-ox1u(good) = oxyu1good(:,1);
-oy1u(good) = oxyu1good(:,2);
+good = ~isnan(ox1) & ~isnan(oy1);
+
+if any(good(:))
+    oxygood = zeros(numel(ox1(good)), 2);
+    oxygood(:,1) = ox1(good);
+    oxygood(:,2) = oy1(good);
+    
+    oxyu1good = undistortPoints(oxygood, params);
+    
+    
+    ox1u(good) = oxyu1good(:,1);
+    oy1u(good) = oxyu1good(:,2);
+end
 
 oxy1u = cat(3, ox1u, oy1u);
 
