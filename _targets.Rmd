@@ -10,6 +10,7 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```{r}
 library(targets)
 library(tarchetypes)
+library(quarto)
 library(here)
 ```
 
@@ -31,8 +32,11 @@ library(tarchetypes)
 options(tidyverse.quiet = TRUE)
 tar_option_set(packages = c("tidyverse", "here", "R.utils"))
 
-videodatapath <- "Z:\\WHOI-2022\\Data from Erik Anderson\\TE_WHOI_2022_bottomview\\experiments"
-#videodatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview"
+if (.Platform$OS.type == "unix") {
+  videodatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/experiments"
+} else {
+  videodatapath <- "Z:\\WHOI-2022\\Data from Erik Anderson\\TE_WHOI_2022_bottomview\\experiments"
+}
 #videodatapath <- "/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/experiments"
 rawdatapath <- "raw_data"
 processeddatapath <- "processed_data"
@@ -58,8 +62,11 @@ check_matlab_processing <- function(matlabscript, processfile, ...)
     tar_cancel()
   } else {
     processdata <- read_csv(processfile, show_col_types = FALSE)
-    if (!all(processdata$isprocessed)) {
-      cli::cli_alert_danger("In MATLAB, run {matlabscript}")
+    nprocessed <- round(sum(processdata$isprocessed)*100)
+    if (nprocessed / nrow(processdata) > 80) {
+      cli::cli_alert_success("More than 80% of files processed. We'll call that success!")
+    } else {
+      cli::cli_alert_info("{nprocessed}% of files processed. In MATLAB, run {matlabscript}")
       tar_cancel()
     }
   }
@@ -155,6 +162,16 @@ list(
                                filelist, calibration))
 )
 ```
+
+```{targets merge3d}
+list(
+  tar_file_read(processedfiles, here(processeddatapath, "processed_bottomview_files.csv"),
+                read_csv(file = !!.x)),
+  tar_quarto(mergeprocessedfiles, path = "merge_processed_files.qmd")
+)
+
+```
+
 
 # Pipeline
 

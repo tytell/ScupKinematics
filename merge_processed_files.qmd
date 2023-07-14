@@ -1,0 +1,87 @@
+---
+title: "Merge processed files"
+format: html
+editor: visual
+---
+
+```{r setup}
+library(tidyverse)
+library(glue)
+library(targets)
+library(tarchetypes)
+```
+
+# Merge processed 3D data files
+
+## Load processed data file
+
+This loads the file `"processed_data/processed_bottomview_files.csv"` from the
+targets data store. If necessary, targets will process all the other files to
+get the file.
+```{r}
+targets::tar_load(processedfiles)
+```
+
+```{r}
+nprocessed <- sum(processedfiles$isprocessed)
+ntotal <- nrow(processedfiles)
+pctprocessed <- round(nprocessed / ntotal * 100)
+
+print(glue("{pctprocessed}% processed ({nprocessed} of {ntotal})"))
+```
+
+```{r}
+if (.Platform$OS.type == "unix") {
+  datarootpath <- "/Volumes/DataSync/ScupKinematics/processed_data/experiments"
+} else {
+  datarootpath <- "Y:\\ScupKinematics\\processed_data\\experiments"
+}
+```
+
+## Load one file
+
+```{r}
+i <- 1
+
+data1 <- read_csv(file.path(datarootpath, processedfiles$data3dfile[[i]]))
+```
+
+```{r}
+data1 <-
+  data1 |> 
+  select("tsec", "imnum", "speedHz", "tempC", matches("(head|tail)[xyz]"),
+         matches("(head|tail)(C[12][xy])"), matches("[xy][LR]C[12]_\\d+")) |> 
+  pivot_longer(matches("[xy][LR]C[12]_\\d+"),
+               names_to = c('.value', "side", "camera", "point"),
+               names_pattern = "([xy])([LR])(C[12])_(.+)")
+```
+
+```{r}
+data1 |> 
+  group_by(imnum) |> 
+  summarize(across(matches("(head|tail)[xyz]"),
+                   first),
+            tsec = first(tsec)) |> 
+  ggplot(aes(x = tsec, y = taily)) +
+  geom_path()
+```
+
+```{r}
+imnums <- data1 |> 
+  pull(imnum) |> 
+  unique()
+```
+
+```{r}
+data1fr <-
+  data1 |> 
+  filter(imnum == sample(imnums, 1))
+```
+
+```{r}
+data1 |> 
+  ggplot(aes(x = x, y = y, color = side)) +
+  geom_point(aes(group = imnum)) +
+  facet_wrap(~ camera)
+```
+
