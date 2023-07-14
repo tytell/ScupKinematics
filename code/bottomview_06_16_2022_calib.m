@@ -1,11 +1,14 @@
 
 
 %% Define images to process
-%imageFilePath = '/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images';
 % imageFilePath = '/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images';
-imageFilePath = 'Z:\WHOI-2022\Data from Erik Anderson\TE_WHOI_2022_bottomview\calibrations\TE_06_16_2022_1655_stereo_calib_images';
-% calibFilePath = '/Users/etytel01/Documents/2023/ScupKinematics/processed_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_calibration.mat';
-calibFilePath = 'D:\ScupKinematics\processed_data\TE_WHOI_2022_bottomview\calibrations\TE_06_16_2022_1655_calibration.mat';
+if ispc()
+    imageFilePath = 'Z:\WHOI-2022\Data from Erik Anderson\TE_WHOI_2022_bottomview\calibrations\TE_06_16_2022_1655_stereo_calib_images';
+    calibFilePath = 'D:\ScupKinematics\processed_data\TE_WHOI_2022_bottomview\calibrations\TE_06_16_2022_1655_calibration.mat';
+else
+    imageFilePath = '/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_stereo_calib_images';
+    calibFilePath = '/Users/etytel01/Documents/2023/ScupKinematics/processed_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_calibration.mat';
+end
 
 imageFileNames1 = {'Right_Cam1.tif',...
     'Right_Cam2.tif',...
