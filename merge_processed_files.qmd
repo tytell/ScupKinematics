@@ -9,6 +9,16 @@ library(tidyverse)
 library(glue)
 library(targets)
 library(tarchetypes)
+library(here)
+```
+
+```{r}
+library(logger)
+log_threshold(DEBUG)
+```
+
+```{r}
+source(here("code", "midlines.R"))
 ```
 
 # Merge processed 3D data files
@@ -47,14 +57,22 @@ data1 <- read_csv(file.path(datarootpath, processedfiles$data3dfile[[i]]))
 ```
 
 ```{r}
-data1 <-
+data1pts <-
   data1 |> 
-  select("tsec", "imnum", "speedHz", "tempC", matches("(head|tail)[xyz]"),
-         matches("(head|tail)(C[12][xy])"), matches("[xy][LR]C[12]_\\d+")) |> 
-  pivot_longer(matches("[xy][LR]C[12]_\\d+"),
+  select("tsec", "imnum", "speedHz", "tempC", 
+         matches("[xy][LR]C[12]u_\\d+"),
+         matches("(head|tail)C\\d[xy]u")) |> 
+  rename_with(~str_replace(.x, "(head|tail)(C\\d)([xy])u", "\\3B\\2u_\\1")) |> 
+  pivot_longer(matches("[xy][LRB]C[12]u_(head|tail|\\d+)"),
                names_to = c('.value', "side", "camera", "point"),
-               names_pattern = "([xy])([LR])(C[12])_(.+)")
+               names_pattern = "([xy])([LRB])(C[12])u_(.+)") |> 
+  mutate(side = case_when(point == "head"  ~  "H",
+                          point == "tail"  ~  "T",
+                          .default = side))
+
+head(data1pts, 200)
 ```
+
 
 ```{r}
 data1 |> 
@@ -67,21 +85,161 @@ data1 |>
 ```
 
 ```{r}
-imnums <- data1 |> 
+imnums.orig <- data1pts |> 
   pull(imnum) |> 
   unique()
 ```
 
 ```{r}
-data1fr <-
-  data1 |> 
-  filter(imnum == sample(imnums, 1))
+data1pts <-
+  data1pts |> 
+  mutate(notfound = y == x) |> 
+  group_by(imnum) |> 
+  mutate(notfoundfr = all(notfound)) |> 
+  ungroup() |> 
+  filter(!notfoundfr) |> 
+  select(-starts_with("notfound"))
+
+```
+
+
+```{r}
+data1ptsgood <-
+  data1pts |> 
+  group_by(camera, imnum) |> 
+  mutate(x.head = x[point == "head"],
+         x.tail = x[point == "tail"],
+         y.head = y[point == "head"],
+         y.tail = y[point == "tail"],
+         y.med = median(y, na.rm = TRUE),
+         y.L.med = median(y[side == "L"], na.rm = TRUE),
+         y.R.med = median(y[side == "R"], na.rm = TRUE),
+         width.med = abs(y.R.med - y.L.med)) |> 
+  filter((x >= x.tail) & (x <= x.head) &
+           (abs(y - y.med) <= 1.5*width.med))
+  
 ```
 
 ```{r}
-data1 |> 
+imnum1 <- sample(imnums, 1)
+message(imnum1)
+
+data1ptsgood |> 
+  filter(imnum == imnum1) |>
   ggplot(aes(x = x, y = y, color = side)) +
-  geom_point(aes(group = imnum)) +
+  geom_point(data = ~ filter(.x, side %in% c("L", "R")), aes(group = imnum)) +
+  geom_point(data = ~filter(.x, side %in% c("H", "T"))) +
+  # geom_point(data = filter(data1ptsgood, imnum == imnum1) |> 
+  #             filter(side %in% c("L", "R"))) +
+  #              # filter((x >= x.tail) & (x <= x.head))) +
+  # facet_wrap(~ camera) +
+  coord_fixed()
+```
+
+```{r}
+data1ptsgood <-
+  data1ptsgood |> 
+  ungroup() |> 
+  # filter(imnum %in% c(2938, 2939)) |> 
+  mutate(xctr = x - x.head,
+         yctr = y - y.head,
+         dist = sqrt(xctr^2 + yctr^2),
+         len = sqrt((x.head - x.tail)^2 + (y.head - y.tail)^2)) |> 
+  nest(data = c(starts_with('x'), starts_with('y'), dist, len), 
+       .by = c(tsec:tempC, camera)) |> 
+  mutate(swimdir = 
+           purrr::map(data, \(df) get_central_axis(df, x = xctr, y = yctr, 
+                                                   dist = dist, len = len))) |> 
+  unnest(swimdir)
+
+data1ptsgood
+```
+
+```{r}
+data1ptsgood |> 
+  group_by(camera) |> 
+  arrange(tsec, .by_group = TRUE) |> 
+  mutate(contigid = find_contiguous_blocks(tsec, tol = 0.01)) |> 
+  dplyr::filter(!is.na(contigid)) |> 
+  ggplot(aes(x = tsec, y = swimdirx, color = factor(contigid))) +
+  geom_path() +
   facet_wrap(~ camera)
+```
+
+
+```{r}
+data1ptsgood |> 
+  ggplot(aes(x = tsec, y = swimdirx)) +
+  geom_path() +
+  facet_wrap(~camera)
+```
+
+```{r}
+dt <- 0.02
+filtcoefs <- gsignal::butter(9, 1 * (2*dt), "low", output = "Sos")
+
+q <- data1ptsgood |> 
+  group_by(camera) |>
+  arrange(tsec, .by_group = TRUE) |> 
+  mutate(block = find_contiguous_blocks(tsec, tol = 0.01)) |> 
+  dplyr::filter(!is.na(block)) |> 
+  group_by(camera, block) |> 
+  group_modify(\(df, k) resample_xy(df, t = tsec, x = swimdirx, y = swimdiry,
+                                    dt = 0.02))
+
+q
+#   group_modify(\(df, k) smooth_xy(df, t = tsec, x = swimdirx, y = swimdiry,
+#                                               filtercoefs = filtcoefs, tol = 0.01))
+# 
+# q |> 
+#   ggplot(aes(x = tsec, y = swimdirx, color = factor(block))) +
+#   geom_path() +
+#   facet_wrap(~ camera)
+
+```
+
+```{r}
+dt <- 0.02
+filtcoefs <- gsignal::butter(9, 1 * (2*dt), "low", output = "Sos")
+
+q |> 
+  # dplyr::filter(camera == "C1" & block == 0) |> 
+  mutate(swimang = atan2(swimdiry, swimdirx),
+         swimang = gsignal::unwrap(swimang)) |> 
+  group_by(camera, block) |> 
+  group_modify(\(df, k) smooth_xy(df, t = tsec, x = contains("swim"), y = c(),
+                                              filtercoefs = filtcoefs, tol = 0.01)) |> 
+  mutate(swimdirx_s2 = cos(swimang_s),
+         swimdiry_s2 = sin(swimang_s)) |> 
+  # mutate(swimdirx_s = filtfiltends(filtcoefs, swimdirx)) |> 
+  ggplot(aes(x = tsec)) +
+  geom_path(aes(y = swimdirx), color = "black") +
+  geom_path(aes(y = swimdirx_s2), color = "red") +
+  facet_wrap(~ camera)
+```
+
+```{r}
+q |> 
+  ggplot(aes(x = tsec, y = swimdirx, color = factor(block))) +
+  geom_path() +
+  facet_wrap(~ camera)
+
+```
+
+```{r}
+ca <- 
+  data1ptsgood |> 
+  ungroup() |> 
+  filter(imnum == imnum1) |> 
+  get_central_axis()
+
+data1ptsgood |> 
+  filter(imnum == imnum1) |> 
+  ggplot(aes(x = x, y = y, color = side)) +
+  geom_point() +
+  geom_segment(data = ~ head(.x),
+               aes(x = x.head, y = y.head,
+                   xend = x.head + 100 * ca[1], yend = y.head + 100 * ca[2])) +
+  coord_fixed()
 ```
 
