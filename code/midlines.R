@@ -73,7 +73,7 @@ filtfiltends <- function(filtcoefs, x, na.action = na.omit)
   xs
 }
 
-resample_xy <- function(df, t, x, y, dt = NULL, t_even = NULL)
+resample_pts <- function(df, t, pts, dt = NULL, t_even = NULL)
 {
   t0 <- pull(df, {{t}})
   
@@ -92,7 +92,7 @@ resample_xy <- function(df, t, x, y, dt = NULL, t_even = NULL)
   
   df_even <-
     df |> 
-    select(c({{x}}, {{y}})) |> 
+    select(c({{pts}})) |> 
     map(\(c) approx(t0, c, t_even)$y) |> 
     as_tibble()
   
@@ -103,7 +103,7 @@ resample_xy <- function(df, t, x, y, dt = NULL, t_even = NULL)
   df_even
 }
 
-smooth_xy <- function(df, t, x, y, filtercoefs = NULL,
+smooth_pts <- function(df, t, pts, filtercoefs = NULL,
                       name_suffix = "_s", tol = 1e-6,
                       cutoff.Hz = NULL, order = 9)
 {
@@ -113,8 +113,7 @@ smooth_xy <- function(df, t, x, y, filtercoefs = NULL,
     dt1 <- na.omit(lead(t1) - t1)
     dtm <- Mode(dt1)
     if (any(!dplyr::near(dt1, dtm, tol = tol))) {
-      cli::cli_abort("smooth_xy does not work on unevenly sampled data (range(dt) = {range(dt1)})")
-      stop("Unevenly sampled data")
+      cli::cli_abort("smooth_pts does not work on unevenly sampled data (range(dt) = {range(dt1)})")
     }
     sampfreq <- 1/dt1[1]
   
@@ -122,7 +121,7 @@ smooth_xy <- function(df, t, x, y, filtercoefs = NULL,
                                    ouput = "Sos")
   }
   
-  xys <- select(df, c({{x}}, {{y}})) |> 
+  xys <- select(df, c({{pts}})) |> 
     purrr::map(\(c) filtfiltends(filtercoefs, c)) |> 
     as_tibble()
   
@@ -131,16 +130,45 @@ smooth_xy <- function(df, t, x, y, filtercoefs = NULL,
     bind_cols(df)
 }
 
-rotate_to_swimdir <- function(df, x, y, swimdirx, swimdiry)
+rotate_to_swimdir <- function(df, x, y, a, b, swimdirx, swimdiry)
 {
-  xdf <- select(df, x)
-  ydf <- select(df, y)
+  # xdf <- select(df, x)
+  # ydf <- select(df, y)
+  # 
+  # if (ncol(xdf) != ncol(ydf)) {
+  #   cli::cli_abort(c("x and y must have the same number of columns",
+  #                    "i" = "x has {ncol(xdf)} column{?s} and y has {ncol(ydf)} column{?s}."))
+  # }
   
-  if (ncol(xdf) != ncol(ydf)) {
-    cli::cli_abort(c("x and y must have the same number of columns",
-                     "i" = "x has {ncol(xdf)} column{?s} and y has {ncol(ydf)} column{?s}."))
+  df |> 
+    mutate("{a}" := .data[[x]] * swimdirx + .data[[y]] * swimdiry,
+           "{b}" := .data[[x]] * (-swimdiry) + .data[[y]] * swimdirx)
+}
+
+interp_side <- function(df, mcol,ncol, m.tail, n.tail, m0)
+{
+  m1 <- c(0, pull(df, {{mcol}}))
+  n1 <- c(0, pull(df, {{ncol}}))
+  npt <- length(m1)
+  
+  m.tail1 <- pull(df, {{m.tail}})[[1]]
+  n.tail1 <- pull(df, {{n.tail}})[[1]]
+  
+
+  if (m1[npt] > m.tail1) {
+    if (any(m1[1:npt-1]) > m.tail1)
+      cli::cli_alert_warning("Points are past the tail")
+
+    m1[npt] <- m.tail1
+    n1[npt] <- n.tail1
+  } else {
+    m1 <- c(m1, m.tail1)
+    n1 <- c(n1, n.tail1)
   }
-  
-  purrr::map2(xdf, ydf, \(x,y) tibble(xr = x * swimdirx + y * swimdiry,
-                                      yr = x * (-swimdiry) + y * swimdirx))
+
+  # mn <- approx(m1, n1, xout = m0)
+  # colnames(mn) <- c("m0", "{{n}}_e")
+  mn <- as_tibble(approx(m1, n1, xout = m0))
+  colnames(mn) <- c("m0", "n0")
+  mn
 }

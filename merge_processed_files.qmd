@@ -85,12 +85,6 @@ data1 |>
 ```
 
 ```{r}
-imnums.orig <- data1pts |> 
-  pull(imnum) |> 
-  unique()
-```
-
-```{r}
 data1pts <-
   data1pts |> 
   mutate(notfound = y == x) |> 
@@ -121,6 +115,13 @@ data1ptsgood <-
 ```
 
 ```{r}
+imnums <-
+  data1ptsgood |> 
+  pull(imnum) |> 
+  unique()
+```
+
+```{r}
 imnum1 <- sample(imnums, 1)
 message(imnum1)
 
@@ -136,31 +137,39 @@ data1ptsgood |>
   coord_fixed()
 ```
 
+
 ```{r}
-data1ptsgood <-
+data1ptsdir <-
   data1ptsgood |> 
   ungroup() |> 
   # filter(imnum %in% c(2938, 2939)) |> 
-  mutate(xctr = x - x.head,
-         yctr = y - y.head,
-         dist = sqrt(xctr^2 + yctr^2),
-         len = sqrt((x.head - x.tail)^2 + (y.head - y.tail)^2)) |> 
-  nest(data = c(starts_with('x'), starts_with('y'), dist, len), 
-       .by = c(tsec:tempC, camera)) |> 
-  mutate(swimdir = 
-           purrr::map(data, \(df) get_central_axis(df, x = xctr, y = yctr, 
-                                                   dist = dist, len = len))) |> 
-  unnest(swimdir)
+  mutate(dist = sqrt((x - x.head)^2 + (y - y.head)^2),
+         len = sqrt((x.head - x.tail)^2 + (y.head - y.tail)^2),
+         xctr = x - x.head,
+         yctr = y - y.head) |> 
+  select(-contains("med")) |> 
+  nest(outline = c(xctr, yctr, side, dist, len),
+       .by = c(tsec, imnum, speedHz, tempC, camera, x.head, x.tail, y.head, y.tail)) |> 
+  mutate(swimdir =
+           purrr::map(outline, \(df) get_central_axis(df, x = xctr, y = yctr,
+                                                   dist = dist, len = len))) |>
+  unnest(swimdir) |> 
+  mutate(swimdiry = if_else(swimdirx > 0, -swimdiry, swimdiry),
+         swimdirx = if_else(swimdirx > 0, -swimdirx, swimdirx))
 
-data1ptsgood
+head(data1ptsdir)
+data1ptsdir$outline[[1]]
 ```
 
 ```{r}
-data1ptsgood |> 
+data1ptsblocks <-
+  data1ptsdir |> 
   group_by(camera) |> 
   arrange(tsec, .by_group = TRUE) |> 
   mutate(contigid = find_contiguous_blocks(tsec, tol = 0.01)) |> 
-  dplyr::filter(!is.na(contigid)) |> 
+  dplyr::filter(!is.na(contigid))
+
+data1ptsblocks |> 
   ggplot(aes(x = tsec, y = swimdirx, color = factor(contigid))) +
   geom_path() +
   facet_wrap(~ camera)
@@ -168,26 +177,25 @@ data1ptsgood |>
 
 
 ```{r}
-data1ptsgood |> 
-  ggplot(aes(x = tsec, y = swimdirx)) +
-  geom_path() +
-  facet_wrap(~camera)
-```
-
-```{r}
 dt <- 0.02
 filtcoefs <- gsignal::butter(9, 1 * (2*dt), "low", output = "Sos")
 
-q <- data1ptsgood |> 
+data1even <- data1ptsblocks |> 
   group_by(camera) |>
   arrange(tsec, .by_group = TRUE) |> 
   mutate(block = find_contiguous_blocks(tsec, tol = 0.01)) |> 
   dplyr::filter(!is.na(block)) |> 
+  mutate(swimang = atan2(swimdiry, swimdirx),
+         swimang = gsignal::unwrap(swimang)) |> 
   group_by(camera, block) |> 
-  group_modify(\(df, k) resample_xy(df, t = tsec, x = swimdirx, y = swimdiry,
-                                    dt = 0.02))
+  group_modify(\(df, k) resample_pts(df, t = tsec, pts = c(swimang),
+                                    dt = 0.02)) |> 
+  group_modify(\(df, k) smooth_pts(df, t = tsec, pts = swimang,
+                                   filtercoefs = filtcoefs, tol = 0.01)) |>
+  mutate(swimdirx_s = cos(swimang_s),
+         swimdiry_s = sin(swimang_s))
 
-q
+data1even
 #   group_modify(\(df, k) smooth_xy(df, t = tsec, x = swimdirx, y = swimdiry,
 #                                               filtercoefs = filtcoefs, tol = 0.01))
 # 
@@ -199,6 +207,125 @@ q
 ```
 
 ```{r}
+t_uneven = unique(data1ptsgood$tsec)
+
+data1swimdir <-
+  data1ptsblocks |> 
+  left_join(data1even |> 
+              group_by(camera) |> 
+              group_modify(\(df, k) resample_pts(df, t = tsec, pts = swimang_s,
+                                                 t_even = t_uneven)),
+            by = c("camera", "tsec")) |> 
+  mutate(swimdirx_s = cos(swimang_s),
+         swimdiry_s = sin(swimang_s))
+
+data1swimdir |>
+  ggplot(aes(x = tsec, y = swimdirx_s, color = contigid)) +
+  geom_path() +
+  facet_wrap(~ camera)
+  
+```
+
+
+```{r}
+data1rotate <-
+  data1swimdir |> 
+  ungroup() |> 
+  mutate(outline = purrr::pmap(list(df = outline, x = "xctr", y = "yctr", 
+                                 a = "m", b = "n",
+                                 swimdirx = swimdirx_s, swimdiry = swimdiry_s),
+                            rotate_to_swimdir))
+```
+
+```{r}
+head(data1rotate)
+data1rotate$outline[[1]]
+```
+
+```{r}
+head(data1rotate)
+```
+
+```{r}
+len.med <-
+  data1rotate |> 
+  mutate(len = map_vec(outline, \(df) df$len[[1]])) |> 
+  ungroup() |> 
+  pull(len) |> 
+  median(na.rm = TRUE)
+
+dm <- len.med / ceiling(len.med / 20)
+m0 <- seq(0, len.med, by = dm)
+```
+
+```{r}
+head(data1rotate) |> 
+  mutate(mn.ht = map(outline, \(df) with(df, tibble(m.tail = m[side == "T"],
+                                                  n.tail = n[side == "T"])))) |> 
+  unnest(mn.ht)
+```
+
+```{r}
+interp_side2 <- function(df, mcol, ncol, m0)
+{
+  m1 <- c(0, pull(df, {{mcol}}))
+  n1 <- c(0, pull(df, {{ncol}}))
+  
+  mn <- as_tibble(approx(m1, n1, xout = m0))
+  colnames(mn) <- c("m0", "n0")
+  mn
+}
+```
+
+# CONTINUE - get even spacing on each side relative to m
+
+```{r}
+data1sides <-
+  head(data1rotate) |> 
+  hoist(outline, "m", "n", "side", "len") |> 
+  select(-outline) |> 
+  unnest(c(m,n,side, len)) |> 
+  group_by(imnum) |> 
+  mutate(m.tail = m[side == "T"],
+         n.tail = n[side == "T"]) |> 
+  dplyr::filter(side %in% c("L", "R")) |>
+  group_by(imnum, camera, side) |> 
+  arrange(m, .by_group = TRUE) |> 
+  nest(sidepts = c(m,n, m.tail,n.tail)) |> 
+  ungroup() 
+
+data1sides$sidepts[[1]]
+data1sides |> 
+  mutate(sideptseven = purrr::map(sidepts, \(df) interp_side(df, mcol = m, ncol = n, m.tail = m.tail, n.tail = n.tail, m0 = m0))) |> 
+  unnest(sideptseven)
+  # group_map(\(df,k) interp_side(df, m,n, m.tail,n.tail, m0))
+  # mutate(sideptseven)
+  #group_by(imnum, camera, side) |> 
+  #nest(sidepts = c(m, n))
+  # dplyr::filter(side %in% c("L", "R")) |> 
+  # select(side, m, n) |> 
+  # nest(sidepts = c(m, n), .by = side)
+```
+
+
+```{r}
+data1rotate |> 
+  hoist(data, "xctr", "yctr", "m", "n", "side") |> 
+  select(-data) |> 
+  unnest(c(xctr, yctr, m, n, side)) |> 
+  filter(imnum == sample(imnum, 1)) |> 
+  ggplot(aes(x = m, y = n, color = side)) +
+  geom_point() +
+  geom_point(aes(x = xctr, y = yctr, color = side)) +
+  facet_wrap(~camera) +
+  coord_fixed()
+```
+
+```{r}
+data1swimdir$data[[1]]
+```
+
+```{r}
 dt <- 0.02
 filtcoefs <- gsignal::butter(9, 1 * (2*dt), "low", output = "Sos")
 
@@ -207,7 +334,7 @@ q |>
   mutate(swimang = atan2(swimdiry, swimdirx),
          swimang = gsignal::unwrap(swimang)) |> 
   group_by(camera, block) |> 
-  group_modify(\(df, k) smooth_xy(df, t = tsec, x = contains("swim"), y = c(),
+  group_modify(\(df, k) smooth_pts(df, t = tsec, pts = contains("swim"),
                                               filtercoefs = filtcoefs, tol = 0.01)) |> 
   mutate(swimdirx_s2 = cos(swimang_s),
          swimdiry_s2 = sin(swimang_s)) |> 
