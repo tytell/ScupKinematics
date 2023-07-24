@@ -1,33 +1,91 @@
 require(dplyr)
-require(logger)
 
-get_central_axis <- function(df, x, y, dist, len, headlen = 0.4)
+reorganize_outline_data <- function(df)
 {
   df <-
     df |> 
-    dplyr::filter({{dist}} / {{len}} < headlen)
+    # first get the right columns
+    select("filename", "tsec", "imnum", "speedHz", "tempC", 
+           matches("[xy][LR]C[12]u_\\d+"),
+           matches("(head|tail)C\\d[xy]u"),
+           matches("(head|tail)[xyz]")) |> 
+    # rename the head and tail columns
+    rename_with(~str_replace(.x, "(head|tail)(C\\d)([xy])u", "\\3B\\2u_\\1")) |> 
+    # pivot so that the outline is single x and y columns
+    pivot_longer(matches("[xy][LRB]C[12]u_(head|tail|\\d+)"),
+                 names_to = c('.value', "side", "camera", "point"),
+                 names_pattern = "([xy])([LRB])(C[12])u_(.+)") |> 
+    mutate(side = case_when(point == "head"  ~  "H",
+                            point == "tail"  ~  "T",
+                            .default = side))
   
-  if (nrow(df) == 0)
-  {
-    logger::log_warn("No head points detected!")
-    tibble(swimdirx = NA, swimdiry = NA)
-  }
-  else {
-    # this slightly dumb combination gives us a single long vector if x consists
-    # multiple columns
-    x1 <- select(df, {{x}}) |> 
-      as.matrix() |> 
-      as.vector()
-    y1 <- select(df, {{y}}) |> 
-      as.matrix() |> 
-      as.vector()
-    
-    xy <- as.matrix(cbind(x1, y1))
+  # get rid of points where nothing was found
+  df <-
+    df |> 
+    mutate(notfound = y == x) |> 
+    group_by(filename, imnum) |> 
+    mutate(notfoundfr = all(notfound)) |> 
+    ungroup() |> 
+    filter(!notfoundfr) |> 
+    select(-starts_with("notfound"))
   
-    S <- svd(xy, nu = 0, nv = 2)
-    
-    tibble(swimdirx = S$v[1,1], swimdiry = S$v[2,1])
-  }
+  # and filter out points that are clear outliers
+  df <-
+    df |> 
+    group_by(filename, camera, speedHz, imnum) |> 
+    mutate(x.head = x[point == "head"],
+           x.tail = x[point == "tail"],
+           y.head = y[point == "head"],
+           y.tail = y[point == "tail"],
+           y.med = median(y, na.rm = TRUE),
+           y.L.med = median(y[side == "L"], na.rm = TRUE),
+           y.R.med = median(y[side == "R"], na.rm = TRUE),
+           width.med = abs(y.R.med - y.L.med)) |> 
+    filter((x >= x.tail) & (x <= x.head) &
+             (abs(y - y.med) <= 1.5*width.med))
+  
+  df |> 
+    ungroup() |> 
+    mutate(xctr = x - x.head,
+           yctr = y - y.head) |> 
+    select(-contains("med"), -c(x, y)) |> 
+    group_by(filename, imnum, camera) |> 
+    nest(outline = c(xctr, yctr, side, point))
+}
+
+get_central_axis <- function(df, x, y)
+{
+  # this slightly dumb combination gives us a single long vector if x consists
+  # multiple columns
+  x1 <- select(df, {{x}}) |> 
+    as.matrix() |> 
+    as.vector()
+  y1 <- select(df, {{y}}) |> 
+    as.matrix() |> 
+    as.vector()
+  
+  xy <- as.matrix(cbind(x1, y1))
+
+  S <- svd(xy, nu = 0, nv = 2)
+  
+  # if (S$v[1,1] < 0)
+  #   S$v[,1] <- -S$v[,1]
+  
+  tibble(swimdirx = S$v[1,1], swimdiry = S$v[2,1])
+}
+
+duplicate_head_tail <- function(df)
+{
+  ht <- df |> 
+    filter(side %in% c("T", "H"))
+  
+  htR <- ht |> 
+    mutate(side = "R")
+  htL <- ht |> 
+    mutate(side = "L")
+  
+  bind_rows(df, htL, htR) |> 
+    filter(side %in% c("L", "R"))
 }
 
 Mode <- function(x, na.action = na.omit) 
@@ -143,6 +201,25 @@ rotate_to_swimdir <- function(df, x, y, a, b, swimdirx, swimdiry)
   df |> 
     mutate("{a}" := .data[[x]] * swimdirx + .data[[y]] * swimdiry,
            "{b}" := .data[[x]] * (-swimdiry) + .data[[y]] * swimdirx)
+}
+
+interp_even_side <- function(df, m,n, m0, pt, names_suffix = "0")
+{
+  df <-
+    df |> 
+    distinct({{m}}, .keep_all = TRUE)
+  
+  m1 <- pull(df, {{m}})
+  n1 <- pull(df, {{n}})
+  
+  m1max <- max(m1, na.rm = TRUE)
+  m0[length(m0)] <- m1max
+  
+  mn <- approx(m1, n1, xout = m0) |> 
+    as_tibble() |> 
+    rename("{{m}}{names_suffix}" := x,
+              "{{n}}{names_suffix}" := y) |> 
+    mutate(!!pt := seq_along(m0))
 }
 
 interp_side <- function(df, mcol,ncol, m.tail, n.tail, m0)

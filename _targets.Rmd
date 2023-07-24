@@ -10,7 +10,7 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```{r}
 library(targets)
 library(tarchetypes)
-library(quarto)
+library(tidyverse)
 library(here)
 ```
 
@@ -30,48 +30,27 @@ We first define some global options/functions common to all targets.
 library(tarchetypes)
 
 options(tidyverse.quiet = TRUE)
-tar_option_set(packages = c("tidyverse", "here", "R.utils"))
+tar_option_set(packages = c("tidyverse", "here", "R.utils"),
+               workspace_on_error = TRUE # Save a workspace file for a target that errors out.
+)
 
 if (.Platform$OS.type == "unix") {
   videodatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/experiments"
+  datarootpath <- "/Volumes/DataSync/ScupKinematics/processed_data/experiments"
 } else {
   videodatapath <- "Z:\\WHOI-2022\\Data from Erik Anderson\\TE_WHOI_2022_bottomview\\experiments"
+  datarootpath <- "Y:\\ScupKinematics\\processed_data\\experiments"
 }
 #videodatapath <- "/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/experiments"
 rawdatapath <- "raw_data"
 processeddatapath <- "processed_data"
+
+nfilesingroup <- 10
 ```
 
-This is a simple function to stop the process if a Matlab script needs to be run.
-It looks to see if the script is newer than its output file, and if it is, it
-stops the run.
-```{targets run-matlab-fcn, tar_globals = TRUE}
-prompt_run_matlab <- function(matlabscript, outputfile, ...)
-{
-  if (!file.exists(outputfile) || (file.mtime(matlabscript) > file.mtime(outputfile))) {
-    cli::cli_alert_danger("In MATLAB, run {matlabscript}")
-    tar_cancel()
-  }
-  outputfile
-}
-
-check_matlab_processing <- function(matlabscript, processfile, ...)
-{
-  if (!file.exists(processfile) || (file.mtime(matlabscript) > file.mtime(processfile))) {
-    cli::cli_alert_danger("In MATLAB, run {matlabscript}")
-    tar_cancel()
-  } else {
-    processdata <- read_csv(processfile, show_col_types = FALSE)
-    nprocessed <- round(sum(processdata$isprocessed)*100)
-    if (nprocessed / nrow(processdata) > 80) {
-      cli::cli_alert_success("More than 80% of files processed. We'll call that success!")
-    } else {
-      cli::cli_alert_info("{nprocessed}% of files processed. In MATLAB, run {matlabscript}")
-      tar_cancel()
-    }
-  }
-  processfile
-}
+```{targets functions, tar_globals = TRUE}
+source("code/scan_raw_files.R")
+source("code/midlines.R")
 ```
 
 # Targets
@@ -89,68 +68,6 @@ list(
 )
 ```
 
-```{targets scan-bottomview-files, tar_globals = TRUE}
-count_file_lines <- function(filename, chunksize = 65536) {
-  f <- file(filename, open="rb")
-  
-  nlines <- 0L
-  while (length(chunk <- readBin(f, "raw", chunksize)) > 0) {
-    nlines <- nlines + sum(chunk == as.raw(10L))
-  }
-  close(f)  
-  
-  nlines
-}
-
-make_output_filename <- function(filename)
-{
-  str_c(tools::file_path_sans_ext(filename), "-3D.csv")
-}
-
-scan_bottomview_files <- function(rootdir, outputfile)
-{
-  tar_assert_file(rootdir)
-  indivdirs <- Sys.glob(file.path(rootdir, '*', 'scup*'))
-  if (length(indivdirs) == 0)
-    cli::cli_alert_warning("Found 0 folders!")
-  else
-    cli::cli_alert_success("Found {length(indivdirs)} folders")
-
-  allfiles <-
-    map(indivdirs, 
-        \(d) tibble(fullfilepath = 
-                      list.files(d, pattern = 'scup\\d{2}_[0123456789.]+hz_2022Y_.+\\.xlsx?',
-                                 recursive = FALSE, full.names = TRUE))) |> 
-    list_rbind() 
-  
-  allfiles <-
-    allfiles |> 
-    mutate(relpath = getRelativePath(fullfilepath, relativeTo = rootdir),
-           filename = basename(fullfilepath)) |> 
-    separate_wider_regex(filename, c(id = "scup\\d+", "_",
-                                     speed_Hz = "[0123456789.]+", "hz_",
-                                     datetime = "2022Y_.+", "\\.xlsx?")) |> 
-    mutate(datetime = parse_date_time(datetime, orders = "%YY_%mM_%dD_%Hh_%Mm_%Ss", 
-                                      exact = TRUE,
-                                      tz = "America/New_York"))
-  if (nrow(allfiles) == 0)
-    cli::cli_alert_warning("Found 0 files!")
-  else
-    cli::cli_alert_success("Found {nrow(allfiles)} files")
-
-  allfiles <-
-    allfiles |> 
-    mutate(data3dfile = purrr::map_vec(relpath, make_output_filename),
-           filesize = purrr::map_vec(fullfilepath, file.size,
-                                     .progress = "Getting file sizes"),
-           nrows = purrr::map_vec(fullfilepath, count_file_lines,
-                                  .progress = "Getting number of lines"))
-  write_csv(allfiles, outputfile)
-  outputfile  
-}
-```
-
-
 ```{targets triangulate}
 list(
   tar_file(filelist, scan_bottomview_files(videodatapath, 
@@ -163,12 +80,146 @@ list(
 )
 ```
 
+```{targets read_file, tar_globals = TRUE}
+read_data_file <- function(datarootpath, filename)
+{
+  cli::cli_alert_info("Read file {basename(filename)}")
+  
+  df <- read_csv(file.path(datarootpath, filename), id = "filename",
+           col_types = list(.default = col_double()),
+           show_col_types = FALSE) |> 
+    reorganize_outline_data()
+  cli::cli_alert_info("  {nrow(df)} row{?s}")
+  df
+}
+```
+
+```{targets even_outline, tar_globals = TRUE}
+even_outline_spacing <- function(df)
+{
+    df |> 
+    ungroup() |> 
+    mutate(swimdir =
+             purrr::map(outline, \(df) get_central_axis(df, x = xctr, y = yctr),
+                        .progress = "Getting central axis...")) |> 
+    unnest(swimdir) |> 
+    mutate(swimdirx = -swimdirx,
+           swimdiry = -swimdiry) |> 
+  
+    mutate(outline = purrr::pmap(list(df = outline, x = "xctr", y = "yctr", 
+                                      a = "m", b = "n",
+                                      swimdirx = swimdirx, swimdiry = swimdiry),
+                                 rotate_to_swimdir,
+                                 .progress = "Rotating to central axis...")) |> 
+    mutate(outline = purrr::map(outline, duplicate_head_tail))
+}
+```
+
+```{targets even_spacing, tar_globals = TRUE}
+get_even_spacing <- function(df)
+{
+  m.max <-
+    df |> 
+    ungroup() |> 
+    mutate(m.max = map_vec(outline, \(df) max(df$m, na.rm = TRUE))) |> 
+    summarize(m.max = median(m.max, na.rm = TRUE)) |> 
+    pull(m.max)
+  
+  dm <- m.max / ceiling(m.max / 20)
+  m.even <- seq(0, m.max, by = dm)
+  
+  m.even
+}
+```
+
+
 ```{targets merge3d}
 list(
   tar_file_read(processedfiles, here(processeddatapath, "processed_bottomview_files.csv"),
-                read_csv(file = !!.x)),
-  tar_quarto(mergeprocessedfiles, path = "merge_processed_files.qmd")
+                read_csv(file = !!.x) |> 
+                  mutate(fileexists = map_vec(data3dfile, 
+                                              \(f) file.exists(file.path(datarootpath, f))),
+                         .progress = "Finding data files")),
+  tar_target(testfiles, processedfiles |> 
+               filter(isprocessed & fileexists) |> 
+               group_by(id) |> 
+               mutate(fishgroup = floor(seq(1,n()) / nfilesingroup))), # |> 
+               # head(3)),
+  tar_group_by(filegroup, testfiles, id, fishgroup),
+  tar_target(outlinedata1,
+             purrr::map_df(filegroup$data3dfile,
+                    \(f) read_data_file(datarootpath, f)),
+             pattern = map(filegroup),
+             error = "continue"),
+  tar_target(outlinedata2,
+             even_outline_spacing(outlinedata1),
+             pattern = map(outlinedata1)),
+  tar_target(m.even, get_even_spacing(outlinedata2),
+             pattern = map(outlinedata2)),
+  tar_target(outlinedata,
+             outlinedata2 |>
+               unnest(outline) |>
+               select(-c(xctr, yctr, point)) |>
+               nest(edge = c(m,n)) |>
+               mutate(edge = purrr::map(edge, \(df) df |> arrange(m))) |>
+               mutate(edge.even =
+                        purrr::map(edge, \(df) interp_even_side(df, m,n, m.even,
+                                                                "pt", names_suffix = ''),
+                                   .progress = "Interpolating even edges")),
+             pattern = map(outlinedata2))
 )
+```
+
+
+# Tests
+
+These sections will run just a few data files to make sure the pipeline above will work.
+
+```{r eval=FALSE}
+processedfiles <- here(processeddatapath, "processed_bottomview_files.csv") |> 
+  read_csv() |> 
+  mutate(fileexists = map_vec(data3dfile, 
+                              \(f) file.exists(file.path(datarootpath, f)),
+                              .progress = TRUE))
+```
+```{r eval=FALSE}
+testfiles <- processedfiles |> 
+  filter(isprocessed & fileexists) |> 
+  group_by(id) |> 
+  mutate(fishgroup = floor(seq(1,n()) / nfilesingroup))
+```
+
+```{r eval=FALSE}
+filegroup <- head(testfiles, 3)
+
+outlinedata1 <-
+  purrr::map_df(filegroup$data3dfile,
+                \(f) read_data_file(datarootpath, f))
+```
+
+```{r eval=FALSE}
+outlinedata2 <-
+  outlinedata1 |>
+  even_outline_spacing()
+```
+
+```{r eval=FALSE}
+m.even <- get_even_spacing(outlinedata2)
+```
+
+```{r eval=FALSE}
+outlinedata <-
+  outlinedata2 |>
+  ungroup() |> 
+  unnest(outline) |>
+  select(-c(xctr, yctr, point)) |>
+  nest(edge = c(m,n)) |>
+  mutate(edge = purrr::map(edge, \(df) df |> arrange(m)),
+         .progress = "Arranging along axis") |>
+  mutate(edge.even =
+           purrr::map(edge, \(df) interp_even_side(df, m,n, m.even,
+                                                   "pt", names_suffix = ''),
+                      .progress = "Interpolating even edges"))
 
 ```
 

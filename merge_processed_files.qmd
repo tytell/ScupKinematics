@@ -33,11 +33,21 @@ targets::tar_load(processedfiles)
 ```
 
 ```{r}
-nprocessed <- sum(processedfiles$isprocessed)
-ntotal <- nrow(processedfiles)
-pctprocessed <- round(nprocessed / ntotal * 100)
+processedfiles <-
+  processedfiles |> 
+  mutate(fileexists = map_vec(data3dfile, \(f) file.exists(file.path(datarootpath, f))))
+```
 
-print(glue("{pctprocessed}% processed ({nprocessed} of {ntotal})"))
+```{r}
+processedfiles |> 
+  mutate(isprocessed = isprocessed == 1) |> 
+  summarize(nprocessed = sum(isprocessed),
+            nexist = sum(isprocessed & fileexists),
+            nmissing = sum(isprocessed & !fileexists),
+            ntotal = n(),
+            pctprocessed = round(nprocessed / n() * 100),
+            pctexist = round(nexist / n() * 100),
+            pctmissing = round(nmissing / n() * 100))
 ```
 
 ```{r}
@@ -51,9 +61,16 @@ if (.Platform$OS.type == "unix") {
 ## Load one file
 
 ```{r}
-i <- 1
+filenames <-
+  processedfiles |> 
+  filter(isprocessed & fileexists) |> 
+  head(3) |> 
+  pull(data3dfile)
+```
 
-data1 <- read_csv(file.path(datarootpath, processedfiles$data3dfile[[i]]))
+```{r}
+data1 <- map_df(filenames, 
+                \(f) read_csv(file.path(datarootpath, f), id = "filename"))
 ```
 
 ```{r}
@@ -100,7 +117,7 @@ data1pts <-
 ```{r}
 data1ptsgood <-
   data1pts |> 
-  group_by(camera, imnum) |> 
+  group_by(camera, speedHz, imnum) |> 
   mutate(x.head = x[point == "head"],
          x.tail = x[point == "tail"],
          y.head = y[point == "head"],
@@ -113,6 +130,7 @@ data1ptsgood <-
            (abs(y - y.med) <= 1.5*width.med))
   
 ```
+
 
 ```{r}
 imnums <-
@@ -133,7 +151,7 @@ data1ptsgood |>
   # geom_point(data = filter(data1ptsgood, imnum == imnum1) |> 
   #             filter(side %in% c("L", "R"))) +
   #              # filter((x >= x.tail) & (x <= x.head))) +
-  # facet_wrap(~ camera) +
+  facet_wrap(~ camera) +
   coord_fixed()
 ```
 
@@ -143,22 +161,97 @@ data1ptsdir <-
   data1ptsgood |> 
   ungroup() |> 
   # filter(imnum %in% c(2938, 2939)) |> 
-  mutate(dist = sqrt((x - x.head)^2 + (y - y.head)^2),
-         len = sqrt((x.head - x.tail)^2 + (y.head - y.tail)^2),
-         xctr = x - x.head,
+  mutate(xctr = x - x.head,
          yctr = y - y.head) |> 
   select(-contains("med")) |> 
-  nest(outline = c(xctr, yctr, side, dist, len),
+  nest(outline = c(xctr, yctr, side),
        .by = c(tsec, imnum, speedHz, tempC, camera, x.head, x.tail, y.head, y.tail)) |> 
   mutate(swimdir =
-           purrr::map(outline, \(df) get_central_axis(df, x = xctr, y = yctr,
-                                                   dist = dist, len = len))) |>
+           purrr::map(outline, \(df) get_central_axis(df, x = xctr, y = yctr))) |> 
   unnest(swimdir) |> 
-  mutate(swimdiry = if_else(swimdirx > 0, -swimdiry, swimdiry),
-         swimdirx = if_else(swimdirx > 0, -swimdirx, swimdirx))
+  mutate(swimdirx = -swimdirx,
+         swimdiry = -swimdiry)
 
 head(data1ptsdir)
 data1ptsdir$outline[[1]]
+```
+```{r}
+data1rotate <-
+  data1ptsdir |> 
+  ungroup() |> 
+  mutate(outline = purrr::pmap(list(df = outline, x = "xctr", y = "yctr", 
+                                 a = "m", b = "n",
+                                 swimdirx = swimdirx, swimdiry = swimdiry),
+                            rotate_to_swimdir))
+
+head(data1rotate)
+data1rotate$outline[[1]]
+```
+
+```{r}
+duplicate_head_tail <- function(df)
+{
+  ht <- df |> 
+    filter(side %in% c("T", "H"))
+  
+  htR <- ht |> 
+    mutate(side = "R")
+  htL <- ht |> 
+    mutate(side = "L")
+  
+  bind_rows(df, htL, htR) |> 
+    filter(side %in% c("L", "R"))
+}
+
+data1rotlr <-
+  data1rotate |> 
+  mutate(outline = map(outline, duplicate_head_tail)) |> 
+  unnest(outline)
+
+head(data1rotlr, 65)
+```
+
+```{r}
+m.max <-
+  data1rotlr |> 
+  group_by(imnum) |> 
+  filter(side == "L") |> 
+  summarize(m.max = max(m, na.rm = TRUE)) |> 
+  summarize(m.max = median(m.max, na.rm = TRUE)) |> 
+  pull(m.max)
+
+dm <- m.max / ceiling(m.max / 20)
+m.even <- seq(0, m.max, by = dm)
+
+m.even
+
+```
+
+
+```{r}
+data1lreven <-
+  data1rotlr |> 
+  group_by(speedHz, camera, imnum, side) |>
+  arrange(m, .by_group = TRUE) |> 
+  group_modify(\(df,k) interp_even_side(df, m,n, m.even, "pt", names_suffix = '')) 
+```
+
+```{r}
+data1lreven
+```
+
+```{r}
+data1lreven |> 
+  group_by(speedHz, camera, imnum) |> 
+  pivot_wider(names_from = side, values_from = c(m, n))  |> 
+  mutate(m = m_L,
+         n = case_when(is.na(n_R)  ~  n_L,
+                       is.na(n_L)  ~  n_R,
+                       .default = (n_R + n_L)/2)) |> 
+  ggplot(aes(x = m, y = n, color = imnum)) +
+  geom_path(aes(group = imnum)) +
+  facet_grid(speedHz ~ camera) +
+  coord_fixed()
 ```
 
 ```{r}
