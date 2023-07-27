@@ -205,21 +205,34 @@ rotate_to_swimdir <- function(df, x, y, a, b, swimdirx, swimdiry)
 
 interp_even_side <- function(df, m,n, m0, pt, names_suffix = "0")
 {
+  m <- enquo(m)
+  n <- enquo(n)
+  
   df <-
     df |> 
-    distinct({{m}}, .keep_all = TRUE)
+    distinct(!!m, .keep_all = TRUE)
   
-  m1 <- pull(df, {{m}})
-  n1 <- pull(df, {{n}})
+  m1 <- rlang::eval_tidy(m, data = df)
+  n1 <- rlang::eval_tidy(n, data = df)
   
-  m1max <- max(m1, na.rm = TRUE)
-  m0[length(m0)] <- m1max
+  if (sum(!is.na(m1) & !is.na(n1)) <= 3) {
+    mn <- tibble("{{m}}{names_suffix}" := rep_along(m0, NA_real_),
+                 "{{n}}{names_suffix}" := rep_along(m0, NA_real_),
+                 !!pt := seq_along(m0))
+  } else {
+    m1max <- max(m1, na.rm = TRUE)
+    m0[length(m0)] <- m1max
+    
+    mn <- approx(m1, n1, xout = m0) |> 
+      as_tibble()
+    
+    colnames(mn) <- c(paste0(quo_name(m), names_suffix),
+                      paste0(quo_name(n), names_suffix))
+    
+    mn[,pt] <- seq_along(m0)
+  }
   
-  mn <- approx(m1, n1, xout = m0) |> 
-    as_tibble() |> 
-    rename("{{m}}{names_suffix}" := x,
-              "{{n}}{names_suffix}" := y) |> 
-    mutate(!!pt := seq_along(m0))
+  mn
 }
 
 interp_side <- function(df, mcol,ncol, m.tail, n.tail, m0)
@@ -248,4 +261,10 @@ interp_side <- function(df, mcol,ncol, m.tail, n.tail, m0)
   mn <- as_tibble(approx(m1, n1, xout = m0))
   colnames(mn) <- c("m0", "n0")
   mn
+}
+
+pipe_cli <- function(df, clifcn, ...)
+{
+  clifcn(...)
+  df
 }

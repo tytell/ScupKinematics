@@ -15,3 +15,5 @@ merge_processed_files_files
 *.html
 .SynologyWorkingDirectory
 desktop.ini
+.RData
+.Rapp.history

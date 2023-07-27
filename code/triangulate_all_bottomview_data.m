@@ -10,7 +10,7 @@ if ispc()
     % processeddataroot = '/Users/etytel01/Documents/2023/ScupKinematics/processed_data';
     processeddataroot = 'D:\ScupKinematics\processed_data';
 else
-    imagedataroot = '/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/experiments';
+    imagedataroot = '/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/experiments';
     % imagedataroot = 'Z:\WHOI-2022\Data from Erik Anderson\TE_WHOI_2022_bottomview\experiments';
     calibFilePath = '/Users/etytel01/Documents/2023/ScupKinematics/processed_data/TE_WHOI_2022_bottomview/calibrations/TE_06_16_2022_1655_calibration.mat';
     % calibFilePath = 'D:\ScupKinematics\processed_data\TE_WHOI_2022_bottomview\calibrations\TE_06_16_2022_1655_calibration.mat';

@@ -31,8 +31,10 @@ library(tarchetypes)
 
 options(tidyverse.quiet = TRUE)
 tar_option_set(packages = c("tidyverse", "here", "R.utils"),
-               workspace_on_error = TRUE # Save a workspace file for a target that errors out.
+               workspace_on_error = TRUE, # Save a workspace file for a target that errors out.
+               format = "parquet"
 )
+tar_resources_parquet(compression = "snappy")
 
 if (.Platform$OS.type == "unix") {
   videodatapath <- "/Volumes/Data/WHOI-2022/Data from Erik Anderson/TE_WHOI_2022_bottomview/experiments"
@@ -45,7 +47,7 @@ if (.Platform$OS.type == "unix") {
 rawdatapath <- "raw_data"
 processeddatapath <- "processed_data"
 
-nfilesingroup <- 10
+nfilesingroup <- 5
 ```
 
 ```{targets functions, tar_globals = TRUE}
@@ -64,7 +66,8 @@ list(
              prompt_run_matlab(calibration_m,
                                here("processed_data", 
                                     "TE_WHOI_2022_bottomview/calibrations",
-                                    "TE_06_16_2022_1655_calibration.mat")))
+                                    "TE_06_16_2022_1655_calibration.mat")),
+             format = "file")
 )
 ```
 
@@ -76,7 +79,8 @@ list(
   tar_target(data3d, 
              check_matlab_processing(triangulate_m,
                                here(processeddatapath, "processed_bottomview_files.csv"),
-                               filelist, calibration))
+                               filelist, calibration),
+             format = "file")
 )
 ```
 
@@ -88,7 +92,8 @@ read_data_file <- function(datarootpath, filename)
   df <- read_csv(file.path(datarootpath, filename), id = "filename",
            col_types = list(.default = col_double()),
            show_col_types = FALSE) |> 
-    reorganize_outline_data()
+    reorganize_outline_data() |> 
+    mutate(filename = factor(filename))
   cli::cli_alert_info("  {nrow(df)} row{?s}")
   df
 }
@@ -128,7 +133,7 @@ get_even_spacing <- function(df)
   dm <- m.max / ceiling(m.max / 20)
   m.even <- seq(0, m.max, by = dm)
   
-  m.even
+  data.frame(m.even)
 }
 ```
 
@@ -143,8 +148,8 @@ list(
   tar_target(testfiles, processedfiles |> 
                filter(isprocessed & fileexists) |> 
                group_by(id) |> 
-               mutate(fishgroup = floor(seq(1,n()) / nfilesingroup))), # |> 
-               # head(3)),
+               mutate(fishgroup = floor(seq(1,n()) / nfilesingroup)) |> 
+               filter(id == "scup41")),
   tar_group_by(filegroup, testfiles, id, fishgroup),
   tar_target(outlinedata1,
              purrr::map_df(filegroup$data3dfile,
@@ -153,19 +158,24 @@ list(
              error = "continue"),
   tar_target(outlinedata2,
              even_outline_spacing(outlinedata1),
-             pattern = map(outlinedata1)),
+             pattern = map(outlinedata1),
+             error = "continue"),
   tar_target(m.even, get_even_spacing(outlinedata2),
              pattern = map(outlinedata2)),
   tar_target(outlinedata,
              outlinedata2 |>
+               ungroup() |> 
                unnest(outline) |>
                select(-c(xctr, yctr, point)) |>
+               arrange(filename, imnum, m) |> 
                nest(edge = c(m,n)) |>
-               mutate(edge = purrr::map(edge, \(df) df |> arrange(m))) |>
                mutate(edge.even =
-                        purrr::map(edge, \(df) interp_even_side(df, m,n, m.even,
+                        purrr::map(edge, \(df) interp_even_side(df, m,n, m.even$m.even,
                                                                 "pt", names_suffix = ''),
-                                   .progress = "Interpolating even edges")),
+                                   .progress = list(name = "Interpolating even edges",
+                                                    format_done = "Total time: {cli::pb_elapsed}",
+                                                    clear = FALSE))) |> 
+               select(-edge),
              pattern = map(outlinedata2))
 )
 ```
@@ -183,10 +193,11 @@ processedfiles <- here(processeddatapath, "processed_bottomview_files.csv") |>
                               .progress = TRUE))
 ```
 ```{r eval=FALSE}
-testfiles <- processedfiles |> 
+#testfiles <- 
+  processedfiles |> 
   filter(isprocessed & fileexists) |> 
-  group_by(id) |> 
-  mutate(fishgroup = floor(seq(1,n()) / nfilesingroup))
+  group_by(id) #|> 
+  #mutate(fishgroup = floor(seq(1,n()) / nfilesingroup))
 ```
 
 ```{r eval=FALSE}
@@ -208,18 +219,23 @@ m.even <- get_even_spacing(outlinedata2)
 ```
 
 ```{r eval=FALSE}
+library(profvis)
+
+# profvis({
 outlinedata <-
   outlinedata2 |>
   ungroup() |> 
   unnest(outline) |>
   select(-c(xctr, yctr, point)) |>
-  nest(edge = c(m,n)) |>
-  mutate(edge = purrr::map(edge, \(df) df |> arrange(m)),
-         .progress = "Arranging along axis") |>
+  arrange(filename, imnum, m) |> 
+  nest(edge = c(m, n)) |>
+  # mutate(edge = purrr::map(edge, \(df) df |> arrange(m),
+  #                          .progress = "Sorting coordinates")) |>
   mutate(edge.even =
-           purrr::map(edge, \(df) interp_even_side(df, m,n, m.even,
+           purrr::map(edge, \(df) interp_even_side(df, m, n, m.even$m.even,
                                                    "pt", names_suffix = ''),
                       .progress = "Interpolating even edges"))
+# })
 
 ```
 

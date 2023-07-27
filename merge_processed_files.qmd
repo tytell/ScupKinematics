@@ -13,11 +13,6 @@ library(here)
 ```
 
 ```{r}
-library(logger)
-log_threshold(DEBUG)
-```
-
-```{r}
 source(here("code", "midlines.R"))
 ```
 
