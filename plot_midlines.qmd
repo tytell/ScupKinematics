@@ -1,0 +1,186 @@
+---
+title: "Plot midlines"
+format: html
+editor: visual
+---
+
+```{r setup}
+library(tidyverse)
+library(here)
+```
+
+```{r}
+filename <- here("processed_data", "outlinedata.parquet")
+data <- arrow::read_parquet(filename)
+```
+
+```{r}
+data <-
+  data |> 
+  select(-c(filenamedata, m.even)) |> 
+  relocate(speedHz, tsec, imnum, camera, side, fish, edge.even) |> 
+  relocate(filename, .after = last_col())
+```
+
+## Baseline checks
+
+```{r}
+data |> 
+  group_by(speedHz, camera) |> 
+  slice_sample(n = 5) |> 
+  unnest(edge.even) |> 
+  ggplot(aes(x = m, y = n, color = speedHz)) +
+  geom_point() +
+  facet_wrap(~ camera)
+```
+
+```{r}
+data |> 
+  head()
+```
+
+```{r}
+speeds <-
+  data |> 
+  distinct(speedHz)
+
+speeds
+```
+
+```{r}
+width <-
+  data |> 
+  unnest(edge.even) |> 
+  group_by(filename, imnum, camera, pt) |> 
+  mutate(width = abs(n[2] - n[1])) |> 
+  group_by(pt) |> 
+  summarize(width = median(width, na.rm = TRUE))
+```
+
+```{r}
+width |> 
+  ggplot(aes(x = pt, y = width)) +
+  geom_path()
+```
+
+```{r}
+datacom <-
+  left_join(
+  data |> filter(speedHz == 11) |> 
+            unnest(edge.even),
+  width,
+  by = "pt") |>
+  group_by(filename, imnum) |> 
+  mutate(com = sum(n * width, na.rm = TRUE) / sum(width)) 
+```
+
+
+
+```{r}
+datamid <-
+  datacom |> 
+  group_by(filename, tsec, imnum, pt) |> 
+  summarize(com = com[1],
+            m = m[1],
+            mid = mean(n, na.rm = TRUE))
+```
+
+```{r}
+datamid |> 
+  filter(imnum %% 30 == 0) |> 
+  ggplot(aes(x = pt, y = mid + com, group = interaction(filename, imnum))) +
+  geom_path()
+```
+
+```{r}
+datamid |> 
+  ungroup() |> 
+  filter(pt %% 5 == 0 | pt == max(pt)) |> 
+  ggplot(aes(x = tsec, y = mid)) +
+  geom_line() +
+  facet_wrap(~ pt) +
+  xlim(20,30)
+```
+
+```{r}
+datamid <-
+  datamid |> 
+  arrange(filename, pt, tsec) |> 
+  group_by(filename, pt) |> 
+  mutate(contig = get_contiguous_chunks(mid + com))
+```
+
+
+```{r}
+datamid |> 
+  group_by(filename, pt) |> 
+  mutate(dt = lead(tsec) - tsec) |> 
+  filter(is.finite(dt) & !is.na(dt) & dt < 1) |> 
+  ggplot(aes(x = dt)) +
+  geom_density()
+
+datamid |> 
+  group_by(filename, pt) |> 
+  mutate(dt = lead(tsec) - tsec) |> 
+  ungroup() |> 
+  summarize(mn = mean(dt, na.rm = TRUE),
+            med = median(dt, na.rm = TRUE),
+            sd = sd(dt, na.rm = TRUE))
+```
+
+```{r}
+datamid |> 
+  ungroup() |> 
+  distinct(filename) |> 
+  slice_sample(n = 1) |> 
+  mutate(filename = as.character(filename)) |> 
+  pull(filename)
+```
+
+```{r}
+datah <- 
+  datamid |> 
+  filter(filename == "/Volumes/DataSync/ScupKinematics/processed_data/experiments/TE_07_11_2022/scup41/scup41_11.000hz_2022Y_07M_11D_13h_03m_03s-3D.csv") |> 
+  arrange(pt, tsec) |> 
+  group_by(pt) |> 
+  mutate(Z = apply_in_chunks(mid + com, gsignal::hilbert, minchunklen = 20,
+                             .NAtype = NA_complex_)) |> 
+  ungroup()
+```
+
+```{r}
+datah |> 
+  filter(pt == 5) |> 
+  ggplot(aes(x = tsec, y = mid + com)) +
+  geom_line() +
+  geom_line(aes(y = Im(Z)), color = "red")
+  #xlim(10,15)
+```
+
+```{r}
+datamid |> 
+  arrange(filename, pt, tsec) |> 
+  group_by(filename, pt) |>   
+  mutate(Z = gsignal::hilbert(mid + com))
+```
+
+
+```{r}
+data |> 
+  filter(speedHz == 11) |> 
+  unnest(edge.even) |> 
+  group_by(filename, imnum, camera, pt) |> 
+  mutate(width = abs(n[2] - n[1])) |> 
+  ungroup() |> 
+  ggplot(aes(x = pt, y = width)) +
+  geom_point(aes(color = camera)) +
+  stat_summary(fun = median, geom = "path")
+  # group_by(filename, imnum, pt) |>
+  # summarize(m = m[[1]],
+  #           mid = mean(n))
+  # ggplot(aes(x = m, y = mid, group = imnum)) +
+  # geom_path() +
+  # coord_equal()
+
+```
+
