@@ -12,6 +12,7 @@ library(targets)
 library(tarchetypes)
 library(tidyverse)
 library(here)
+library(arrow)
 ```
 
 # Setup
@@ -30,7 +31,7 @@ We first define some global options/functions common to all targets.
 library(tarchetypes)
 
 options(tidyverse.quiet = TRUE)
-tar_option_set(packages = c("tidyverse", "here", "R.utils"),
+tar_option_set(packages = c("tidyverse", "here", "R.utils", "arrow"),
                workspace_on_error = TRUE, # Save a workspace file for a target that errors out.
                format = "parquet"
 )
@@ -47,7 +48,14 @@ if (.Platform$OS.type == "unix") {
 rawdatapath <- "raw_data"
 processeddatapath <- "processed_data"
 
+library(cli)
+options(cli.progress_show_after = 0)
+options(cli.progress_clear = FALSE)
+
 nfilesingroup <- 5
+
+s.frac <- pracma::linspace(0, 1, n = 26)
+dt <- 0.02
 ```
 
 ```{targets functions, tar_globals = TRUE}
@@ -138,6 +146,16 @@ get_even_spacing <- function(df)
 ```
 
 
+```{targets save_outline_file, tar_globals = TRUE}
+save_outline_file <- function(df, filename)
+{
+  fullfilename <- here(processeddatapath, filename)
+  arrow::write_parquet(df, fullfilename,
+                compression = "snappy")
+  fullfilename
+}
+```
+
 ```{targets merge3d}
 list(
   tar_file_read(processedfiles, here(processeddatapath, "processed_bottomview_files.csv"),
@@ -160,85 +178,83 @@ list(
              even_outline_spacing(outlinedata1),
              pattern = map(outlinedata1),
              error = "continue"),
-  tar_target(m.even, get_even_spacing(outlinedata2),
-             pattern = map(outlinedata2)),
+  tar_target(m.even, outlinedata2 |> 
+               mutate(filenamedata = process_filename(filename)) |> 
+               mutate(fish = pluck(filenamedata, "fish")) |> 
+               group_by(fish) |> 
+               group_modify(\(df,k) get_even_spacing(df)) |> 
+               nest(m.even = m.even)),
   tar_target(outlinedata,
              outlinedata2 |>
+               mutate(filenamedata = process_filename(filename),
+                      fish = pluck(filenamedata, "fish")) |> 
+               left_join(m.even, by = "fish") |> 
                ungroup() |> 
                unnest(outline) |>
                select(-c(xctr, yctr, point)) |>
                arrange(filename, imnum, m) |> 
                nest(edge = c(m,n)) |>
                mutate(edge.even =
-                        purrr::map(edge, \(df) interp_even_side(df, m,n, m.even$m.even,
+                        purrr::map2(edge, m.even, \(df, m.even) interp_even_side(df, m,n, m.even$m.even,
                                                                 "pt", names_suffix = ''),
                                    .progress = list(name = "Interpolating even edges",
                                                     format_done = "Total time: {cli::pb_elapsed}",
                                                     clear = FALSE))) |> 
                select(-edge),
-             pattern = map(outlinedata2))
+             pattern = map(outlinedata2)),
+  tar_target(outlinedatafile, 
+             save_outline_file(outlinedata, "outlinedata.parquet"),
+             format = "file")
 )
 ```
 
-
-# Tests
-
-These sections will run just a few data files to make sure the pipeline above will work.
-
-```{r eval=FALSE}
-processedfiles <- here(processeddatapath, "processed_bottomview_files.csv") |> 
-  read_csv() |> 
-  mutate(fileexists = map_vec(data3dfile, 
-                              \(f) file.exists(file.path(datarootpath, f)),
-                              .progress = TRUE))
-```
-```{r eval=FALSE}
-#testfiles <- 
-  processedfiles |> 
-  filter(isprocessed & fileexists) |> 
-  group_by(id) #|> 
-  #mutate(fishgroup = floor(seq(1,n()) / nfilesingroup))
+```{targets get_midlines}
+list(
+  tar_group_by(fishdata, outlinedata, fish),
+  tar_target(width, 
+             fishdata |> 
+               get_width(),
+             pattern = map(fishdata)),
+  tar_target(comdata,
+             fishdata |> 
+               select(-c(m.even, filenamedata)) |> 
+               get_com(width),
+             pattern = map(fishdata, width))
+)
 ```
 
-```{r eval=FALSE}
-filegroup <- head(testfiles, 3)
+```{targets interpolate_even}
+list(
+  tar_group_by(fishcomdata, comdata, fish),
+  tar_target(midpoints,   
+             get_midline_uneven(fishcomdata),
+             pattern = map(fishcomdata)),
+  tar_target(evenpoints,
+             even_midline_spacing(midpoints, s.frac),
+             pattern = map(midpoints)),
+  tar_target(evenchunks,
+             get_midline_time_chunks(evenpoints, minchunkdur = 2),             
+             pattern = map(evenpoints)),
+  tar_target(eventime,
+             even_midline_timing(evenpoints, evenchunks, dt),
+             pattern = map(evenpoints, evenchunks)),
+  tar_target(midlinedatafile,
+             save_outline_file(eventime, "midlinedata.parquet"),
+             format = "file")
+  
+)
+```
 
-outlinedata1 <-
-  purrr::map_df(filegroup$data3dfile,
-                \(f) read_data_file(datarootpath, f))
+# Testing
+
+```{r eval=FALSE}
+evenpoints <- tar_read(evenpoints, branches = 1)
+evenchunks <- tar_read(evenchunks, branches = 1)
 ```
 
 ```{r eval=FALSE}
-outlinedata2 <-
-  outlinedata1 |>
-  even_outline_spacing()
+even_midline_timing(evenpoints, evenchunks, dt)
 ```
-
-```{r eval=FALSE}
-m.even <- get_even_spacing(outlinedata2)
-```
-
-```{r eval=FALSE}
-library(profvis)
-
-# profvis({
-outlinedata <-
-  outlinedata2 |>
-  ungroup() |> 
-  unnest(outline) |>
-  select(-c(xctr, yctr, point)) |>
-  arrange(filename, imnum, m) |> 
-  nest(edge = c(m, n)) |>
-  # mutate(edge = purrr::map(edge, \(df) df |> arrange(m),
-  #                          .progress = "Sorting coordinates")) |>
-  mutate(edge.even =
-           purrr::map(edge, \(df) interp_even_side(df, m, n, m.even$m.even,
-                                                   "pt", names_suffix = ''),
-                      .progress = "Interpolating even edges"))
-# })
-
-```
-
 
 # Pipeline
 
@@ -251,4 +267,5 @@ If you ran all the `{targets}` chunks in non-interactive mode, then your R scrip
 ```{r eval=FALSE}
 tar_make()
 ```
+
 

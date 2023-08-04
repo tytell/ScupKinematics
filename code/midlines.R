@@ -211,7 +211,7 @@ interp_even_side <- function(df, m,n, m0, pt, names_suffix = "0")
   df <-
     df |> 
     distinct(!!m, .keep_all = TRUE)
-  
+
   m1 <- rlang::eval_tidy(m, data = df)
   n1 <- rlang::eval_tidy(n, data = df)
   
@@ -263,8 +263,157 @@ interp_side <- function(df, mcol,ncol, m.tail, n.tail, m0)
   mn
 }
 
-pipe_cli <- function(df, clifcn, ...)
+process_filename <- function(filename)
 {
-  clifcn(...)
-  df
+  m <- str_match(filename, "(scup\\d+)_([\\d.]+)hz_(\\d{4}Y_\\d{2}M_\\d{2}D_\\d{2}h_\\d{2}m_\\d{2}s)")
+  data <- m[,2:4] |> 
+    as_tibble(.name_repair = "minimal")
+  
+  colnames(data) <- c("fish", "speedHz", "date")
+  
+  data |> 
+    mutate(date = lubridate::ymd_hms(date, tz = "America/New_York"))
+}
+
+get_width <- function(df)
+{
+  df |> 
+    unnest(edge.even) |> 
+    group_by(fish, filename, imnum, camera, pt) |> 
+    mutate(width = abs(n[2] - n[1])) |> 
+    group_by(fish, pt) |> 
+    summarize(width = median(width, na.rm = TRUE))
+}
+
+get_com <- function(df, width)
+{
+  left_join(
+    df |> 
+      unnest(edge.even),
+    width,
+    by = c("fish", "pt")) |>
+    group_by(filename, imnum) |> 
+    mutate(com = sum(n * width, na.rm = TRUE) / sum(width)) 
+}
+
+even_points <- function(df, s,m,n, s.frac)
+{
+  s <- enquo(s)
+  m <- enquo(m)
+  n <- enquo(n)
+
+  s1 <- rlang::eval_tidy(s, data = df)
+  m1 <- rlang::eval_tidy(m, data = df)
+  n1 <- rlang::eval_tidy(n, data = df)
+  
+  if (any(is.na(s1) | is.na(m1) | is.na(n1))) {
+    dfnew <- tibble(s.even = rep_along(s.frac, NA_real_),
+                    x = rep_along(s.frac, NA_real_),
+                    y = rep_along(s.frac, NA_real_))
+  }
+  else {
+    s0 <- s.frac * s1[length(s1)]
+    
+    tryCatch({
+      m.even <- approx(s1, m1, xout = s0)
+      n.even <- approx(s1, n1, xout = s0)
+    },
+    warning = function(w) {
+      cli::cli_alert_warning(w)
+    })
+    
+    dfnew = cbind(data.frame(pt = seq_along(s0)),
+                  data.frame(m.even), 
+                  data.frame(n.even$y))
+  }
+  
+  colnames(dfnew) <- c("pt", "s.even",
+                       paste0(quo_name(m), ".even"),
+                       paste0(quo_name(n), ".even"))
+  
+  # bind_cols(df, dfnew)
+  dfnew
+}
+
+even_time <- function(df, t, cols, dt)
+{
+  t1 <- rlang::eval_tidy(enquo(t), data = df)
+  # s <- enquo(s)
+  # s1 <- rlang::eval_tidy(s, data = df)
+  
+  t.even <- seq(t1[1], t1[length(t1)], by = dt)
+  
+  
+  ty <- purrr::map(select(df, {{cols}}), 
+                   \(y) approx(t1, y, xout = t.even)) |> 
+    as.data.frame()
+  
+  ty <- ty[,c(1, seq(2, ncol(ty), by = 2))]
+  tynames <- colnames(ty) |> 
+    str_replace("\\.y$", ".even")
+  tynames[1] <- "t.even"
+
+  colnames(ty) <- tynames
+  # ty[,quo_name(s)] <- s1[1]
+  
+  ty
+}
+
+get_midline_uneven <- function(df)
+{
+  df |> 
+    ungroup() |> 
+    mutate(n = if_else(m == 0, 0, n)) |> 
+    group_by(filename, fish, speedHz, tsec, imnum, pt) |> 
+    summarize(com = com[1],
+              m = m[1],
+              mid = mean(n, na.rm = TRUE))
+}
+
+even_midline_spacing <- function(df, s.frac)
+{
+  df |> 
+    group_by(filename, imnum) |> 
+    mutate(ds1 = sqrt((m - lag(m))^2 + (mid - lag(mid))^2),
+           ds1 = replace_na(ds1, 0),
+           s1 = cumsum(ds1)) |> 
+    select(-ds1) |> 
+    group_by(fish, filename, imnum) |> 
+    nest(midline = c(pt, s1,m,mid)) |> 
+    mutate(mid.even = purrr::map(midline, \(df) even_points(df, s1,m,mid, s.frac),
+                                 .progress = TRUE)) |> 
+    select(-midline) |> 
+    unnest(mid.even)
+}
+
+get_midline_time_chunks <- function(df, minchunkdur)
+{
+  df |> 
+    ungroup() |> 
+    group_by(filename, fish, speedHz, tsec) |> 
+    summarize(ngood = sum(!is.na(mid.even))) |> 
+    filter(ngood == max(ngood)) |> 
+    group_by(filename, fish, speedHz) |> 
+    mutate(dt = tsec - lag(tsec),
+           newchunk = is.na(dt) | dt > 0.05,
+           chunk = cumsum(newchunk)) |> 
+    group_by(filename, fish, speedHz, chunk) |> 
+    mutate(chunkdur = max(tsec, na.rm = TRUE) - min(tsec, na.rm = TRUE)) |> 
+    filter(chunkdur > minchunkdur)
+}  
+
+even_midline_timing <- function(df, chunks, dt)
+{
+  df |> 
+    left_join(chunks |> 
+                select(filename, tsec, chunk),
+              by = c("filename", "fish", "speedHz", "tsec")) |> 
+    filter(!is.na(chunk)) |> 
+    group_by(filename, speedHz, chunk, pt) |>
+    nest(midline = c(tsec, imnum, s.even, m.even, mid.even, com)) |> 
+    mutate(midline.t.even = 
+             purrr::map(midline, \(df) even_time(df, tsec, c(m.even, mid.even), 0.02)),
+           s.mn = purrr::map_vec(midline, \(df) mean(df$s.even, na.rm = TRUE))) |> 
+    select(-midline) |> 
+    unnest(midline.t.even)
 }
