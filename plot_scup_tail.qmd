@@ -1,0 +1,223 @@
+---
+title: "Plot scup tail data"
+format: html
+editor: visual
+---
+
+```{r setup}
+library(tidyverse)
+library(patchwork)
+library(here)
+```
+
+```{r}
+here::i_am("code/plot_scup_tail.qmd")
+```
+
+## Get fish lengths
+
+```{r}
+filename <- here("processed_data", "all scup lengths-1.csv")
+lengths <- read_csv(filename, skip = 2, col_names = FALSE)
+
+colnames(lengths) <- c("fishnum", "year", "fork.len.cm")
+
+lengths <-
+  lengths |> 
+  mutate(fishnum = as.numeric(str_extract(fishnum, "\\d+")))
+```
+
+## Get tail beat data
+
+```{r}
+read_scup_tail_data_file <- function(filename)
+{
+  name0 <- read_csv(filename, skip = 4, n_max = 1, col_select = 2:54)
+  fishnum <- read_csv(filename, skip = 3, n_max = 1, col_select = 2:54,
+                      col_names = FALSE)
+  data0 <- read_csv(filename,
+                    skip = 6, col_select = 2:54,
+                    col_names = FALSE)
+
+  names <- tibble(name0 = colnames(name0),
+                  fishnum = unlist(fishnum, use.names = FALSE)) |> 
+    mutate(name = case_when(str_detect(name0, "u_fish")  ~  "u.mps",
+                            str_detect(name0, "f\\(hz\\)")  ~  "f.Hz",
+                            str_detect(name0, "amp") ~  "amp.cm"),
+           name = str_c(name, fishnum, sep = "_"))
+  
+  colnames(data0) <- names$name
+
+  data <-
+    data0 |> 
+    pivot_longer(cols = c(contains("u.mps"), contains("f.Hz"), contains("amp.cm")),
+                 names_pattern = "(.*)_(\\d+)",
+                 names_to = c(".value", "fishnum")) |> 
+    mutate(fishnum = as.numeric(fishnum))
+  
+  data
+}
+```
+
+```{r}
+data21 <- read_scup_tail_data_file(here("processed_data", "scup_tail_2021.csv"))
+data22 <- read_scup_tail_data_file(here("processed_data", "scup_tail_2022.csv"))
+```
+
+```{r}
+data <-
+  bind_rows(data21, data22)
+```
+
+```{r}
+datalen <-
+  data |> 
+  left_join(lengths, by = "fishnum") |> 
+  mutate(u.BLps = u.mps / (fork.len.cm / 100),
+         amp.L = amp.cm / fork.len.cm) |> 
+  mutate(id = as.factor(str_c("scup", fishnum)))
+```
+
+## Check stats
+
+```{r}
+lengths |> 
+  filter(fishnum %in% datalen$fishnum) |> 
+  arrange(fork.len.cm)
+```
+
+```{r}
+datalen |> 
+  filter(!is.na(u.mps)) |> 
+  group_by(id) |> 
+  distinct(u.mps, .keep_all = TRUE) |> 
+  summarize(n = n(),
+            u.min.BLps = min(u.mps / (fork.len.cm / 100)),
+            u.max.BLps = max(u.mps / (fork.len.cm / 100))) |> 
+  arrange(n) |> 
+  summarize(nindiv = n(),
+            across(where(is.numeric),
+                   list(min = min, max = max, mn = mean, sd = sd)))
+```
+
+```{r}
+model.f <- lm(f.Hz ~ u.BLps*id,
+              data = datalen)
+```
+
+```{r}
+model.f.coefs <-
+  data.frame(model.f$coefficients) |> 
+  rownames_to_column("effect") |>
+  mutate(fishnum = str_extract(effect, "\\d+"),
+         name = case_when(str_detect(effect, "u\\.BLps:")  ~  "slope",
+                          .default = "int")) |> 
+  filter(!is.na(fishnum)) |> 
+  select(-effect) |> 
+  pivot_wider(names_from = name, values_from = model.f.coefficients)
+
+bind_rows(
+  model.f.coefs |> 
+    slice_min(int, n = 3),
+  model.f.coefs |> 
+    slice_max(int, n = 1),
+  model.f.coefs |> 
+    slice_min(slope, n = 1),
+  model.f.coefs |> 
+    slice_max(slope, n = 1)
+)
+  
+```
+
+```{r}
+car::Anova(model.f)
+```
+
+```{r}
+model.amp <- lm(amp.L ~ u.BLps*id,
+                data = datalen)
+```
+
+```{r}
+car::Anova(model.amp)
+```
+
+
+## Plot things 
+
+```{r}
+nfish <- datalen |> 
+  distinct(id) |> 
+  tally() |> 
+  pull(n)
+
+# shapes0 <- c(0, 1, 2, 3, 4, 5, 6, 21, 22, 23, 24, 25)
+shapes0 <- c(15, 17, 19, 3, 4, 5, 6)
+shapes <- rep(shapes0, ceiling(nfish / length(shapes0)))
+shapes <- shapes[1:nfish]
+```
+
+```{r}
+nfish
+```
+
+```{r}
+highlightcol <- scales::brewer_pal(type = "qual", palette = 6)(3)
+
+colors <- datalen |> 
+  distinct(id) |> 
+  mutate(color = scales::grey_pal()(n()),
+         color = case_when(id == "scup35"  ~  highlightcol[[3]],
+                           id == "scup40"  ~  highlightcol[[2]],
+                           id == "scup29"  ~  highlightcol[[1]],
+                           .default = color))
+
+colors <-
+  colors |> 
+  pivot_wider(names_from = id,
+              values_from = color) |> 
+  as.list()
+```
+
+```{r}
+p1 <- datalen |> 
+  # filter(!is.na(f.Hz) & !is.na(amp.L)) |> 
+  ggplot(aes(x = u.BLps, y = f.Hz, color = id, shape = id)) +
+  geom_point(show.legend = FALSE) +
+  stat_smooth(data = ~filter(.x, fishnum %in% c(35, 40, 29)),
+              method = "lm", show.legend = FALSE, se = FALSE) +
+  scale_shape_manual(values = shapes) +
+  scale_color_manual(values = colors) +
+  # scale_color_grey() +
+  labs(x = "Swimming speed (BL/s)",
+       y = "Tail beat frequency (Hz)") +
+  theme_light()
+
+p1
+```
+
+```{r}
+p2 <- datalen |> 
+  # filter(!is.na(f.Hz) & !is.na(amp.L)) |> 
+  ggplot(aes(x = u.BLps, y = amp.L, color = id, shape = id)) +
+  geom_point(show.legend = FALSE) +
+  stat_smooth(data = ~filter(.x, fishnum %in% c(35, 40, 29)),
+              method = "lm", show.legend = FALSE, se = FALSE) +
+  scale_shape_manual(values = shapes) +
+  scale_color_manual(values = colors) +
+  labs(x = "Swimming speed (BL/s)",
+       y = "Tail beat amplitude (BL)") +
+  theme_light()
+
+p2
+```
+
+```{r}
+p1 + p2
+```
+
+```{r}
+ggsave(here("figures","freq_amp_vs_speed.pdf"),
+       width = 6.5, height = 3, units = "in")
+```
+
