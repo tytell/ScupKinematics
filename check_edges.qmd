@@ -1,0 +1,173 @@
+---
+title: "Check outlines"
+format: html
+editor: visual
+---
+
+# Check outlines
+
+```{r setup}
+library(tidyverse)
+library(arrow)
+library(here)
+```
+
+```{r}
+filename <- here("processed_data", "outlinedata.parquet")
+data <- arrow::read_parquet(filename)
+```
+
+```{r}
+data <-
+  data |> 
+  select(-c(filenamedata, m.even)) |> 
+  relocate(speedHz, tsec, imnum, camera, side, fish, edge.even) |> 
+  relocate(filename, .after = last_col())
+```
+
+```{r}
+data |> 
+  distinct(speedHz) |> 
+  arrange(speedHz)
+```
+
+```{r}
+#data <-
+data |> 
+  filter(speedHz %in% c(4.5)) |> 
+  group_by(speedHz, camera, side) |> 
+  # slice_sample(n = 1) |> 
+  unnest(edge.even) |> 
+  filter(#pt %in% c(1, 5, 10, 15, 20, 25),
+         # between(tsec, 40,50),
+         tsec %% 2 == 0) |> 
+         # side == "L") |> 
+  ggplot(aes(x = m, y = n, color = side)) +
+  geom_path(aes(group = interaction(side, tsec))) +
+  facet_grid(tsec ~ camera)
+  # coord_fixed()
+  #xlim(10,20)
+```
+
+```{r}
+width <-
+  data |> 
+  unnest(edge.even) |> 
+  group_by(filename, imnum, camera, pt) |> 
+  mutate(width = abs(n[2] - n[1])) |> 
+  group_by(pt) |> 
+  summarize(width = median(width, na.rm = TRUE))
+```
+
+```{r}
+ggplot(width, aes(x = pt, y = width)) +
+  geom_path()
+```
+
+```{r}
+data |> 
+  filter(speedHz %in% c(4.5)) |> 
+  group_by(speedHz, camera, side) |> 
+  # slice_sample(n = 1) |> 
+  unnest(edge.even) |> 
+  mutate(side_sign = case_when(side == 'L'  ~  1,
+                               side == 'R'  ~  -1,
+                               .default = NA)) |> 
+  left_join(width, by = "pt") |> 
+  ungroup() |> 
+  mutate(meanwidth = mean(width, na.rm = TRUE)) |> 
+  group_by(camera, tsec) |> 
+  mutate(badpt = 
+           case_when(pt < 20   ~  !between(n*side_sign, -0.5*meanwidth, 2*width),
+                     pt >= 20  ~  !between(n*side_sign, -2*meanwidth, 2*meanwidth)),
+         nbad = sum(badpt, na.rm = TRUE),
+         bad = nbad > 5) |> 
+  filter(tsec %% 5 == 0) |> 
+  ggplot(aes(x = pt, y = n, color = side)) +
+  geom_path(aes(group = interaction(tsec, side))) +
+  geom_point(data = ~ filter(.x, badpt),
+             color = 'red') +
+  geom_path(aes(y = width), color = 'yellow')
+  # group_by(camera, tsec) |> 
+  # mutate(bad = case_when(pt < 20  ~  n * side_sign > 2*width,
+  #                        pt >= 20  ~  n * side_sign > 2*meanwidth),
+  #        nbad = sum(bad, na.rm = TRUE))
+```
+
+```{r}
+data |> 
+  filter(speedHz %in% c(4.5)) |> 
+  group_by(speedHz, camera, side) |> 
+  # slice_sample(n = 1) |> 
+  unnest(edge.even) |> 
+  mutate(side_sign = case_when(side == 'L'  ~  1,
+                               side == 'R'  ~  -1,
+                               .default = NA)) |> 
+  left_join(width, by = "pt") |> 
+  ungroup() |> 
+  mutate(meanwidth = mean(width, na.rm = TRUE)) |> 
+  group_by(camera, tsec) |> 
+  mutate(bad = case_when(pt < 20  ~  n * side_sign > 2*width,
+                         pt >= 20  ~  n * side_sign > 2*meanwidth),
+         nbad = sum(bad, na.rm = TRUE)) |> 
+  filter(#pt %in% c(1, 5, 10, 15, 20, 25),
+         # between(tsec, 40,50),
+         tsec %% 0.5 == 0) |> 
+         # side == "L") |> 
+  ggplot(aes(x = m, y = n, color = nbad > 5)) +
+  geom_path(aes(group = interaction(side, tsec))) +
+  facet_grid(tsec ~ camera)
+
+```
+
+```{r}
+datagood <-
+  data |> 
+  # filter(speedHz %in% c(15.0)) |> 
+  group_by(speedHz, camera, side) |> 
+  # slice_sample(n = 1) |> 
+  unnest(edge.even) |> 
+  mutate(side_sign = case_when(side == 'L'  ~  1,
+                               side == 'R'  ~  -1,
+                               .default = NA)) |> 
+  left_join(width, by = "pt") |> 
+  ungroup() |> 
+  mutate(meanwidth = mean(width, na.rm = TRUE)) |> 
+  group_by(speedHz, filename, camera, tsec) |> 
+  mutate(goodpt = 
+           case_when(pt < 20   ~  between(n*side_sign, -0.5*width, 2*width),
+                     pt >= 20  ~  between(n*side_sign, -2*meanwidth, 2*meanwidth)),
+         ngood = sum(goodpt, na.rm = TRUE),
+         bad = ngood < n() - 5)
+
+```
+
+
+
+```{r}
+datagood |> 
+  filter(speedHz %in% c(29.5)) |> 
+  # filter(nbad == 1) |> 
+  # filter(pt %in% c(1, 5, 10, 15, 20, 25)) |> 
+  filter(#pt %in% c(1, 5, 10, 15, 20, 25),
+         # between(tsec, 26,27),
+         tsec %% 0.2 == 0) |>
+  ggplot(aes(x = m, y = n, color = ngood)) +
+  geom_path(aes(group = interaction(side, tsec))) +
+  geom_point(data = ~filter(.x, !goodpt), color = 'red') +
+  facet_grid(tsec ~ camera) +
+  coord_fixed()
+```
+
+```{r}
+datagood |> 
+  filter(!bad) |> 
+  filter(speedHz %in% c(15.0)) |> 
+  filter(pt %in% c(1, 5, 10, 15, 20, 25)) |>
+  filter(between(tsec, 20,30)) |> 
+  ggplot(aes(x = tsec, y = n, color = factor(pt))) +
+  geom_point(aes(group = side)) +
+  geom_path(aes(group = side)) +
+  facet_grid(pt ~ camera)
+```
+
