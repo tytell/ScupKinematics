@@ -25,7 +25,8 @@ data <-
   rename(tsec = t.even,
          m = m.even.even,
          n = mid.even.even,
-         s = s.mn)
+         s = s.mn,
+         com = com.even)
 ```
 
 ```{r}
@@ -51,36 +52,42 @@ data |>
 
 ```{r}
 data |> 
-  filter(speedHz == 6) |> 
-  filter(pt %% 5 == 0) |> 
-  group_by(fish, filename, speedHz, chunk) |> 
-  mutate(chunkdur = max(tsec, na.rm = TRUE) - min(tsec, na.rm = TRUE)) |> 
-  filter(chunkdur == max(chunkdur, na.rm = TRUE)) |> 
-  ggplot(aes(x = tsec, y = n)) +
-  geom_line(aes(group = chunk)) +
-  facet_wrap(~pt) +
-  xlim(14,18)
+  ungroup() |> 
+  distinct(speedHz)
 ```
 
 ```{r}
-filt <- gsignal::butter(9, 1 / (sampfreq/2), type = "low", output = "Sos")
+data |> 
+  filter(speedHz == 7.5) |> 
+  filter(pt %% 5 == 0) |>
+  group_by(fish, filename, speedHz, chunk) |>
+  mutate(chunkdur = max(tsec, na.rm = TRUE) - min(tsec, na.rm = TRUE)) |>
+  filter(chunkdur == max(chunkdur, na.rm = TRUE)) |>
+  ggplot(aes(x = tsec, y = n + com)) +
+  geom_line(aes(group = chunk)) +
+  facet_wrap(~pt)
+  # xlim(14,18)
+```
+
+```{r}
+filtpass <- gsignal::butter(9, c(1, 15) / (sampfreq/2), type = "pass", output = "Sos")
 ```
 
 ```{r}
 datasm <- data |> 
   # filter(speedHz == 10.5) |> 
   group_by(fish, filename, speedHz, pt, chunk) |> 
-  mutate(smoothn = filtfiltends(filt, n))
+  mutate(smoothn = filtfiltends(filtpass, n + com))
 ```
 
 ```{r}
 datasm |> 
-  filter(speedHz == 26.0) |> 
+  filter(speedHz == 15.5) |> 
   # filter(pt == 10, chunk == 3) |> 
-  filter(pt %in% c(10, 15)) |> 
+  filter(pt %in% c(1, 5, 10, 15)) |> 
   # filter(chunk == 3) |> 
   ggplot(aes(x = tsec)) +
-  geom_line(aes(y = n-smoothn, group = chunk)) +
+  geom_line(aes(y = n+com, group = chunk)) +
   geom_line(aes(y = smoothn, group = chunk), color = "blue") +
   facet_wrap(~ pt)
 
@@ -89,16 +96,39 @@ datasm |>
 ```{r}
 datactr <- datasm |> 
   ungroup() |> 
-  mutate(nctr = n - smoothn)
+  mutate(nctr = smoothn)
 ```
 
 ```{r}
 datactr |> 
-  filter(speedHz == 15) |> 
+  filter(speedHz == 15.5) |> 
   filter(pt %% 5 == 0) |>
-  filter(chunk == 8) |>
+  # filter(chunk == 8) |>
   ggplot(aes(x = tsec, y = nctr, group = interaction(chunk,pt), color = pt)) +
   geom_path()
+```
+
+```{r}
+datactr |> 
+  filter(speedHz == 15.5) |> 
+  distinct(chunk)
+```
+
+```{r}
+datactr |> 
+  filter((speedHz == 15.5) &
+          # (pt > 1) &
+          (chunk %in% c(163))) |> 
+  group_by(pt, chunk) |>
+  mutate(Z = gsignal::hilbert(nctr),
+         ph = Arg(Z),
+         amp = Mod(Z)) |>
+  # ungroup() |> 
+  # filter(tsec == 29) |> 
+  group_by(tsec) |>
+  mutate(phu = gsignal::unwrap(ph)) |>
+  ggplot(aes(x = pt, y = phu, color = tsec)) + # interaction(chunk, pt))) +
+  geom_path(aes(group = tsec))
 ```
 
 
