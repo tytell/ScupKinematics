@@ -287,13 +287,32 @@ get_width <- function(df)
 
 get_com <- function(df, width)
 {
-  left_join(
-    df |> 
-      unnest(edge.even),
-    width,
-    by = c("fish", "pt")) |>
+  df |> 
     group_by(filename, imnum) |> 
     mutate(com = sum(n * width, na.rm = TRUE) / sum(width)) 
+}
+
+remove_bad_frames <- function(df, width, nbadcutoff = 3)
+{
+  meanwidth <- mean(width$width, na.rm = TRUE)
+  
+  df |> 
+    group_by(speedHz, camera, side) |> 
+    unnest(edge.even) |> 
+    mutate(side_sign = case_when(side == 'L'  ~  1,
+                                 side == 'R'  ~  -1,
+                                 .default = NA)) |> 
+    left_join(width, by = c("fish", "pt")) |> 
+    ungroup() |> 
+    mutate(meanwidth = meanwidth) |> 
+    group_by(camera, tsec) |> 
+    mutate(goodpt = 
+             case_when(pt < 20   ~  between(n*side_sign, -0.5*width, 2*width),
+                       pt >= 20  ~  between(n*side_sign, -2*meanwidth, 2*meanwidth)),
+           ngood = sum(goodpt, na.rm = TRUE),
+           bad = ngood < n() - nbadcutoff) |> 
+    filter(!bad) |> 
+    mutate(n = if_else(!goodpt, NA, n))
 }
 
 even_points <- function(df, s,m,n, s.frac)
@@ -305,6 +324,8 @@ even_points <- function(df, s,m,n, s.frac)
   s1 <- rlang::eval_tidy(s, data = df)
   m1 <- rlang::eval_tidy(m, data = df)
   n1 <- rlang::eval_tidy(n, data = df)
+  
+  stopifnot(sum(!is.na(s1)) > 3)
   
   if (any(is.na(s1) | is.na(m1) | is.na(n1))) {
     dfnew <- tibble(s.even = rep_along(s.frac, NA_real_),
@@ -380,13 +401,14 @@ even_midline_spacing <- function(df, s.frac)
     select(-ds1) |> 
     group_by(fish, filename, imnum) |> 
     nest(midline = c(pt, s1,m,mid)) |> 
+    ungroup() |> 
     mutate(mid.even = purrr::map(midline, \(df) even_points(df, s1,m,mid, s.frac),
                                  .progress = TRUE)) |> 
     select(-midline) |> 
     unnest(mid.even)
 }
 
-get_midline_time_chunks <- function(df, minchunkdur)
+get_midline_time_chunks <- function(df, maxchunkgap, minchunkdur)
 {
   df |> 
     ungroup() |> 
@@ -394,8 +416,10 @@ get_midline_time_chunks <- function(df, minchunkdur)
     summarize(ngood = sum(!is.na(mid.even))) |> 
     filter(ngood == max(ngood)) |> 
     group_by(filename, fish, speedHz) |> 
-    mutate(dt = tsec - lag(tsec),
-           newchunk = is.na(dt) | dt > 0.05,
+    mutate(tfill = tsec) |> 
+    fill(tfill, .direction = "down") |> 
+    mutate(dt = tfill - lag(tfill),
+           newchunk = is.na(dt) | dt > maxchunkgap,
            chunk = cumsum(newchunk)) |> 
     group_by(filename, fish, speedHz, chunk) |> 
     mutate(chunkdur = max(tsec, na.rm = TRUE) - min(tsec, na.rm = TRUE)) |> 
@@ -412,7 +436,7 @@ even_midline_timing <- function(df, chunks, dt)
     group_by(filename, speedHz, chunk, pt) |>
     nest(midline = c(tsec, imnum, s.even, m.even, mid.even, com)) |> 
     mutate(midline.t.even = 
-             purrr::map(midline, \(df) even_time(df, tsec, c(m.even, mid.even), 0.02)),
+             purrr::map(midline, \(df) even_time(df, tsec, c(com, m.even, mid.even), 0.02)),
            s.mn = purrr::map_vec(midline, \(df) mean(df$s.even, na.rm = TRUE))) |> 
     select(-midline) |> 
     unnest(midline.t.even)

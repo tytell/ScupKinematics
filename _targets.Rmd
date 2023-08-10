@@ -156,7 +156,7 @@ save_outline_file <- function(df, filename)
 }
 ```
 
-```{targets merge3d}
+```{targets getdatafiles}
 list(
   tar_file_read(processedfiles, here(processeddatapath, "processed_bottomview_files.csv"),
                 read_csv(file = !!.x) |> 
@@ -167,7 +167,31 @@ list(
                filter(isprocessed & fileexists) |> 
                group_by(id) |> 
                mutate(fishgroup = floor(seq(1,n()) / nfilesingroup)) |> 
-               filter(id == "scup41")),
+               filter(id == "scup41"))
+)
+```
+
+```{r}
+processedfiles <- tar_read(processedfiles)
+filesummary <-
+  processedfiles |> 
+  group_by(id) |> 
+  summarize(minspeed = min(speed_Hz),
+            maxspeed = max(speed_Hz),
+            nspeed = length(unique(speed_Hz)))
+
+filesummary
+```
+
+```{r}
+filesummary |> 
+  ungroup() |> 
+  summarize(nfish = length(unique(id)),
+            across(where(is.numeric), list(mn = mean, sd = sd)))
+```
+  
+```{targets merge3d}
+list(
   tar_group_by(filegroup, testfiles, id, fishgroup),
   tar_target(outlinedata1,
              purrr::map_df(filegroup$data3dfile,
@@ -208,15 +232,25 @@ list(
 )
 ```
 
-```{targets get_midlines}
+
+```{targets check_midlines}
 list(
   tar_group_by(fishdata, outlinedata, fish),
   tar_target(width, 
              fishdata |> 
                get_width(),
              pattern = map(fishdata)),
-  tar_target(comdata,
+  tar_target(data_good,
              fishdata |> 
+               remove_bad_frames(width),
+             pattern = map(fishdata, width))
+)
+```
+
+```{targets get_com}
+list(
+  tar_target(comdata,
+             data_good |> 
                select(-c(m.even, filenamedata)) |> 
                get_com(width),
              pattern = map(fishdata, width))
@@ -254,6 +288,49 @@ evenchunks <- tar_read(evenchunks, branches = 1)
 
 ```{r eval=FALSE}
 even_midline_timing(evenpoints, evenchunks, dt)
+```
+
+```{r eval=FALSE}
+midpoints <- tar_read(midpoints, branches = 1)
+
+even1 <-
+  midpoints |> 
+  group_by(filename, imnum) |> 
+  mutate(ds1 = sqrt((m - lag(m))^2 + (mid - lag(mid))^2),
+         ds1 = replace_na(ds1, 0),
+         s1 = cumsum(ds1)) |> 
+  select(-ds1) |> 
+  group_by(fish, filename, imnum) |> 
+  nest(midline = c(pt, s1,m,mid)) |> 
+  ungroup() |> 
+  mutate(mid.even = purrr::map(midline, \(df) even_points(df, s1,m,mid, s.frac),
+                               .progress = TRUE))
+```
+
+```{r eval=FALSE}
+head(even1)
+even1$midline[[1]]
+```
+
+```{r}
+tar_read(evenpoints, branch = 1) |> 
+  ungroup() |> 
+  distinct(speedHz)
+```
+
+```{r}
+tar_read(evenpoints, branch = 1) |> 
+  get_midline_time_chunks(maxchunkgap = 0.04, minchunkdur = 2) |> 
+  ungroup() |> 
+  distinct(speedHz)
+
+```
+
+```{r}
+tar_read(evenchunks) |> 
+  ungroup() |> 
+  distinct(speedHz) |> 
+  arrange(speedHz)
 ```
 
 # Pipeline
