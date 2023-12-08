@@ -58,7 +58,7 @@ data |>
 
 ```{r}
 data |> 
-  filter(speedHz == 7.5) |> 
+  filter(speedHz == 23.) |> 
   filter(pt %% 5 == 0) |>
   group_by(fish, filename, speedHz, chunk) |>
   mutate(chunkdur = max(tsec, na.rm = TRUE) - min(tsec, na.rm = TRUE)) |>
@@ -102,7 +102,8 @@ datactr <- datasm |>
 ```{r}
 datactr |> 
   filter(speedHz == 15.5) |> 
-  filter(pt %% 5 == 0) |>
+  filter(pt %% 5 == 0,
+         between(tsec, 35, 40)) |>
   # filter(chunk == 8) |>
   ggplot(aes(x = tsec, y = nctr, group = interaction(chunk,pt), color = pt)) +
   geom_path()
@@ -118,17 +119,97 @@ datactr |>
 datactr |> 
   filter((speedHz == 15.5) &
           # (pt > 1) &
-          (chunk %in% c(163))) |> 
+          (chunk %in% c(63))) |> 
   group_by(pt, chunk) |>
   mutate(Z = gsignal::hilbert(nctr),
          ph = Arg(Z),
          amp = Mod(Z)) |>
   # ungroup() |> 
-  # filter(tsec == 29) |> 
+  filter(near(tsec, 33, tol = 0.2)) |> 
   group_by(tsec) |>
   mutate(phu = gsignal::unwrap(ph)) |>
   ggplot(aes(x = pt, y = phu, color = tsec)) + # interaction(chunk, pt))) +
   geom_path(aes(group = tsec))
 ```
 
+```{r}
+datactr |> 
+  filter(speedHz == 21) |> 
+  arrange(pt, chunk, tsec) |> 
+  group_by(pt, chunk) |> 
+  mutate(Z = gsignal::hilbert(nctr),
+         ph = Arg(Z),
+         amp = Mod(Z)) |>
+  # ungroup() |> 
+  # filter(tsec == 29) |> 
+  group_by(chunk, pt) |>
+  mutate(phu = gsignal::unwrap(ph),
+         dph = (lead(phu) - lag(phu)) / (lead(tsec) - lag(tsec)) / (2*pi)) |> 
+  # filter(chunk == 63) |> 
+  ggplot(aes(x = tsec, y = dph, color = pt)) +
+  geom_path(aes(group = pt))
+  
+```
+
+
+```{r}
+dataph <-
+  datactr |> 
+  arrange(speedHz, filename, chunk, pt, tsec) |> 
+  group_by(speedHz, filename, pt, chunk) |> 
+  mutate(Z = gsignal::hilbert(nctr),
+         ph = Arg(Z),
+         amp = Mod(Z)) |> 
+  group_by(speedHz, filename, chunk, pt) |> 
+  mutate(tphu = gsignal::unwrap(ph),
+         freq = (lead(tphu) - lag(tphu)) / (lead(tsec) - lag(tsec)) / (2*pi)) |> 
+  group_by(speedHz, filename, chunk, tsec) |> 
+  mutate(sphu = gsignal::unwrap(ph) / (2*pi),
+         wavelen = (lead(s) - lag(s)) / (lead(sphu) - lag(sphu)))
+  
+```
+
+```{r}
+dataph |> 
+  filter(speedHz == 15.5) |> 
+         # chunk %in% c(63)) |> 
+         # between(tsec, 32, 33)) |> 
+         # near(tsec, 32, tol = 0.2)) |> 
+  filter(pt %in% c(1, 5, 10, 15, 20, 22, 24)) |> 
+  ungroup() |> 
+  ggplot(aes(x = tphu, y = n+com, color = factor(pt))) +
+  geom_path()
+```
+
+```{r}
+dataph |> 
+  filter((speedHz == 15.5) &
+          # (pt > 1) &
+          (chunk %in% c(63))) |> 
+  ungroup() |>
+  filter(near(tsec, 33, tol = 0.2)) |> 
+  group_by(tsec) |>
+  ggplot(aes(x = pt, y = sphu, color = ph)) + # interaction(chunk, pt))) +
+  geom_path(aes(group = tsec))
+
+```
+
+```{r}
+dataph |> 
+  filter(pt %in% c(15, 20, 25)) |> 
+  ggplot(aes(x = speedHz, y = freq)) +
+  geom_point(aes(color = factor(pt))) +
+  geom_boxplot(aes(group = factor(speedHz))) +
+  facet_wrap(~pt)
+```
+
+```{r}
+dataph |> 
+  filter(speedHz %in% c(9, 15.5, 24)) |> 
+  mutate(ds = lead(sphu) - lag(sphu)) |> 
+  filter(ds < 0) |> 
+  ggplot(aes(x = s, y = ds)) +
+  geom_point(aes(color = speedHz)) +
+  facet_wrap(~speedHz)
+```
 

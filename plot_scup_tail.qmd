@@ -6,12 +6,13 @@ editor: visual
 
 ```{r setup}
 library(tidyverse)
+library(ggpubr)
 library(patchwork)
 library(here)
 ```
 
 ```{r}
-here::i_am("code/plot_scup_tail.qmd")
+here::i_am("plot_scup_tail.qmd")
 ```
 
 ## Get fish lengths
@@ -142,8 +143,7 @@ model.amp <- lm(amp.L ~ u.BLps*id,
 car::Anova(model.amp)
 ```
 
-
-## Plot things 
+## Plot things
 
 ```{r}
 nfish <- datalen |> 
@@ -219,5 +219,56 @@ p1 + p2
 ```{r}
 ggsave(here("figures","freq_amp_vs_speed.pdf"),
        width = 6.5, height = 3, units = "in")
+```
+
+## Figure for grant
+
+```{r}
+datalen |> 
+  distinct(fishnum) 
+```
+
+```{r}
+datalen |> 
+  # filter(fishnum %in% c(15,16)) |> 
+  group_by(fishnum) |> 
+  group_map(
+    ~ ggplot(.x, aes(x = u.BLps, y = f.Hz)) +
+      geom_point(show.legend = FALSE) +
+      stat_smooth(method = "lm", show.legend = FALSE, se = FALSE) +
+      scale_shape_manual(values = shapes) +
+      scale_color_manual(values = colors) +
+      # scale_color_grey() +
+      labs(x = "Swimming speed (BL/s)",
+           y = "Tail beat frequency (Hz)") +
+      ggtitle(.y) +
+      theme_light()
+  )  
+```
+
+Good: Maybe 11, 13, 17, 24, 22, 33, 34, 40, 42?
+
+```{r}
+datalen |> 
+  filter(fishnum %in% c(24, 34)) |>
+  group_by(fishnum) |> 
+  ggplot(aes(y = u.BLps, x = f.Hz, color = id, shape = id)) +
+  geom_point(show.legend = FALSE) +
+  stat_smooth(method = "lm", show.legend = FALSE, se = FALSE) +
+  stat_regline_equation(aes(label = ..adj.rr.label..),
+                        label.x.npc = 'right',
+                        label.y.npc = 'bottom',
+                        hjust = 1,
+                        show.legend = FALSE) +
+  scale_shape_manual(values = c(19, 4)) +
+  scale_color_manual(values = c("seagreen", "black")) +
+  labs(y = "Speed (L/s)",
+       x = "Frequency (Hz)") +
+  theme_light()
+```
+
+```{r}
+ggsave(here("figures","indiv_freq_vs_speed.pdf"),
+       width = 2.37, height = 1.56, units = "in")
 ```
 

@@ -20,7 +20,7 @@ data <- arrow::read_parquet(filename)
 ```{r}
 data <-
   data |> 
-  select(-c(filenamedata, m.even)) |> 
+  select(-any_of(c("filenamedata", "m.even"))) |> 
   relocate(speedHz, tsec, imnum, camera, side, fish, edge.even) |> 
   relocate(filename, .after = last_col())
 ```
@@ -135,8 +135,8 @@ datagood <-
   mutate(meanwidth = mean(width, na.rm = TRUE)) |> 
   group_by(speedHz, filename, camera, tsec) |> 
   mutate(goodpt = 
-           case_when(pt < 20   ~  between(n*side_sign, -0.5*width, 2*width),
-                     pt >= 20  ~  between(n*side_sign, -2*meanwidth, 2*meanwidth)),
+           case_when(pt < 16   ~  between(n*side_sign, -0.5*width, 2*width),
+                     pt >= 16  ~  between(n*side_sign, -2*meanwidth, 2*meanwidth)),
          ngood = sum(goodpt, na.rm = TRUE),
          bad = ngood < n() - 5)
 
@@ -146,17 +146,17 @@ datagood <-
 
 ```{r}
 datagood |> 
-  filter(speedHz %in% c(29.5)) |> 
+  filter(speedHz %in% c(15.0)) |> 
   # filter(nbad == 1) |> 
   # filter(pt %in% c(1, 5, 10, 15, 20, 25)) |> 
   filter(#pt %in% c(1, 5, 10, 15, 20, 25),
-         # between(tsec, 26,27),
+         between(tsec, 20, 30),
          tsec %% 0.2 == 0) |>
-  ggplot(aes(x = m, y = n, color = ngood)) +
+  ggplot(aes(x = pt, y = n, color = ngood)) +
   geom_path(aes(group = interaction(side, tsec))) +
   geom_point(data = ~filter(.x, !goodpt), color = 'red') +
-  facet_grid(tsec ~ camera) +
-  coord_fixed()
+  facet_grid(tsec ~ camera)
+  # coord_fixed()
 ```
 
 ```{r}

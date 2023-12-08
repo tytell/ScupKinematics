@@ -44,7 +44,6 @@ if (.Platform$OS.type == "unix") {
   videodatapath <- "Z:\\WHOI-2022\\Data from Erik Anderson\\TE_WHOI_2022_bottomview\\experiments"
   datarootpath <- "Y:\\ScupKinematics\\processed_data\\experiments"
 }
-#videodatapath <- "/Users/etytel01/Documents/2023/ScupKinematics-old/raw_data/TE_WHOI_2022_bottomview/experiments"
 rawdatapath <- "raw_data"
 processeddatapath <- "processed_data"
 
@@ -63,13 +62,143 @@ source("code/scan_raw_files.R")
 source("code/midlines.R")
 ```
 
-# Targets
+# Scan data files
 
-Matlab script that runs the calibration and generates the `.mat` file that has
-the calibration parameters.
+## Functions
+
+These are extra functions for scanning the number of lines in a data file.
+```{targets scan_files_extra, tar_globals = TRUE}
+count_file_lines <- function(filename, chunksize = 65536) {
+  f <- file(filename, open="rb")
+  
+  nlines <- 0L
+  while (length(chunk <- readBin(f, "raw", chunksize)) > 0) {
+    nlines <- nlines + sum(chunk == as.raw(10L))
+  }
+  close(f)  
+  
+  nlines
+}
+
+make_output_filename <- function(filename)
+{
+  str_c(tools::file_path_sans_ext(filename), "-3D.csv")
+}
+```
+
+This function runs through the root data directory and looks for all of the
+files that have scup data. So that we have a better idea of how long the processing
+will take, it also checks the size of each file and (more importantly) the number
+of lines in each file.
+```{targets scan_files, tar_globals = TRUE}
+scan_bottomview_files <- function(rootdir, outputfile)
+{
+  tar_assert_file(rootdir)
+  indivdirs <- Sys.glob(file.path(rootdir, '*', 'scup*'))
+  if (length(indivdirs) == 0)
+    cli::cli_alert_warning("Found 0 folders!")
+  else
+    cli::cli_alert_success("Found {length(indivdirs)} folders")
+  
+  allfiles <-
+    map(indivdirs, 
+        \(d) tibble(fullfilepath = 
+                      list.files(d, pattern = 'scup\\d{2}_[0123456789.]+hz_2022Y_.+\\.xlsx?',
+                                 recursive = FALSE, full.names = TRUE))) |> 
+    list_rbind() 
+  
+  allfiles <-
+    allfiles |> 
+    mutate(relpath = getRelativePath(fullfilepath, relativeTo = rootdir),
+           filename = basename(fullfilepath)) |> 
+    separate_wider_regex(filename, c(id = "scup\\d+", "_",
+                                     speed_Hz = "[0123456789.]+", "hz_",
+                                     datetime = "2022Y_.+", "\\.xlsx?")) |> 
+    mutate(datetime = parse_date_time(datetime, orders = "%YY_%mM_%dD_%Hh_%Mm_%Ss", 
+                                      exact = TRUE,
+                                      tz = "America/New_York"))
+  if (nrow(allfiles) == 0)
+    cli::cli_alert_warning("Found 0 files!")
+  else
+    cli::cli_alert_success("Found {nrow(allfiles)} files")
+  
+  allfiles <-
+    allfiles |> 
+    mutate(data3dfile = purrr::map_vec(relpath, make_output_filename),
+           filesize = purrr::map_vec(fullfilepath, file.size,
+                                     .progress = "Getting file sizes"),
+           nrows = purrr::map_vec(fullfilepath, count_file_lines,
+                                  .progress = "Getting number of lines"))
+  write_csv(allfiles, outputfile)
+  outputfile  
+}
+```
+
+## Target to scan the data files
+
+Quickly list off all the data files and put them into the big CSV file containing
+the file names, paths, and numbers of lines.
+```{targets filelist}
+list(
+  tar_file(filelist, scan_bottomview_files(videodatapath, 
+                                         here(processeddatapath, "all_bottomview_files.csv")))
+)
+```
+
+# Matlab processing
+
+We need to do the 3D calibration and triangulation in Matlab, which doesn't
+interface with R well.
+
+This function just prompts to run a Matlab script that produces an output file.
+If the output file is older than the matlab script, it fails, otherwise it
+succeeds.
+
+```{targets prompt_run_matlab, tar_globals = TRUE}
+prompt_run_matlab <- function(matlabscript, outputfile, ...)
+{
+  if (!file.exists(outputfile) || (file.mtime(matlabscript) > file.mtime(outputfile))) {
+    cli::cli_alert_danger("In MATLAB, run {matlabscript}")
+    tar_cancel()
+  }
+  outputfile
+}
+```
+
+This function checks the big CSV file containing all of the data files. When we
+run the Matlab processing script, it will add a column containing a TRUE when
+the individual data file is processed. If at least 80% of them are processed,
+the function will succeed. Otherwise it will prompt to run the Matlab script
+again.
+```{targets check_matlab_processing, tar_globals = TRUE}
+check_matlab_processing <- function(matlabscript, processfile, ...)
+{
+  if (!file.exists(processfile) || (file.mtime(matlabscript) > file.mtime(processfile))) {
+    cli::cli_alert_danger("In MATLAB, run {matlabscript}")
+    tar_cancel()
+  } else {
+    processdata <- read_csv(processfile, show_col_types = FALSE)
+    nprocessed <- round(sum(processdata$isprocessed)*100)
+    if (nprocessed / nrow(processdata) > 80) {
+      cli::cli_alert_success("More than 80% of files processed. We'll call that success!")
+    } else {
+      cli::cli_alert_info("{nprocessed}% of files processed. In MATLAB, run {matlabscript}")
+      tar_cancel()
+    }
+  }
+  processfile
+}
+```
+
+## Target to run Matlab scripts
+
+This Matlab script will perform the 3D calibration.
 ```{targets calibration}
 list(
+  # Check that the Matlab script isn't changed
   tar_file(calibration_m, here("code", "bottomview_06_16_2022_calib.m")),
+  
+  # Prompt to run it and save the results in the calibration file
   tar_target(calibration, 
              prompt_run_matlab(calibration_m,
                                here("processed_data", 
@@ -79,11 +208,14 @@ list(
 )
 ```
 
+This Matlab script then applies the calibration to the 2D data to triangulate
+the 3D coordinates.
 ```{targets triangulate}
 list(
-  tar_file(filelist, scan_bottomview_files(videodatapath, 
-                                         here(processeddatapath, "all_bottomview_files.csv"))),
+  # This is the Matlab script
   tar_file(triangulate_m, "code/triangulate_all_bottomview_data.m"),
+  
+  # and this checks that it's run, and what fraction of the data files are processed
   tar_target(data3d, 
              check_matlab_processing(triangulate_m,
                                here(processeddatapath, "processed_bottomview_files.csv"),
@@ -92,70 +224,11 @@ list(
 )
 ```
 
-```{targets read_file, tar_globals = TRUE}
-read_data_file <- function(datarootpath, filename)
-{
-  cli::cli_alert_info("Read file {basename(filename)}")
-  
-  df <- read_csv(file.path(datarootpath, filename), id = "filename",
-           col_types = list(.default = col_double()),
-           show_col_types = FALSE) |> 
-    reorganize_outline_data() |> 
-    mutate(filename = factor(filename))
-  cli::cli_alert_info("  {nrow(df)} row{?s}")
-  df
-}
-```
+# Merge the processed data files
 
-```{targets even_outline, tar_globals = TRUE}
-even_outline_spacing <- function(df)
-{
-    df |> 
-    ungroup() |> 
-    mutate(swimdir =
-             purrr::map(outline, \(df) get_central_axis(df, x = xctr, y = yctr),
-                        .progress = "Getting central axis...")) |> 
-    unnest(swimdir) |> 
-    mutate(swimdirx = -swimdirx,
-           swimdiry = -swimdiry) |> 
-  
-    mutate(outline = purrr::pmap(list(df = outline, x = "xctr", y = "yctr", 
-                                      a = "m", b = "n",
-                                      swimdirx = swimdirx, swimdiry = swimdiry),
-                                 rotate_to_swimdir,
-                                 .progress = "Rotating to central axis...")) |> 
-    mutate(outline = purrr::map(outline, duplicate_head_tail))
-}
-```
-
-```{targets even_spacing, tar_globals = TRUE}
-get_even_spacing <- function(df)
-{
-  m.max <-
-    df |> 
-    ungroup() |> 
-    mutate(m.max = map_vec(outline, \(df) max(df$m, na.rm = TRUE))) |> 
-    summarize(m.max = median(m.max, na.rm = TRUE)) |> 
-    pull(m.max)
-  
-  dm <- m.max / ceiling(m.max / 20)
-  m.even <- seq(0, m.max, by = dm)
-  
-  data.frame(m.even)
-}
-```
-
-
-```{targets save_outline_file, tar_globals = TRUE}
-save_outline_file <- function(df, filename)
-{
-  fullfilename <- here(processeddatapath, filename)
-  arrow::write_parquet(df, fullfilename,
-                compression = "snappy")
-  fullfilename
-}
-```
-
+This target reads in the name of all of the individual data files and checks
+if the 3D triangulated file exists. Then it filters to just the files where
+we have 3D data.
 ```{targets getdatafiles}
 list(
   tar_file_read(processedfiles, here(processeddatapath, "processed_bottomview_files.csv"),
@@ -171,6 +244,9 @@ list(
 )
 ```
 
+## Stats on the processed files
+
+Range of speeds:
 ```{r}
 processedfiles <- tar_read(processedfiles)
 filesummary <-
@@ -183,6 +259,7 @@ filesummary <-
 filesummary
 ```
 
+Number of different fish and their sizes
 ```{r}
 filesummary |> 
   ungroup() |> 
@@ -190,64 +267,486 @@ filesummary |>
             across(where(is.numeric), list(mn = mean, sd = sd)))
 ```
   
-```{targets merge3d}
+## Do the big merge
+
+### Process the individual data files
+
+Read in a single CSV data file and reorganize it into something easier to process
+in R.
+```{targets read_data_file, tar_globals = TRUE}
+read_data_file <- function(datarootpath, filename)
+{
+  cli::cli_alert_info("Read file {basename(filename)}")
+  
+  df <- read_csv(file.path(datarootpath, filename), id = "filename",
+                 col_types = list(.default = col_double()),
+                 show_col_types = FALSE) |> 
+    reorganize_outline_data() |> 
+    mutate(filename = factor(filename))
+  cli::cli_alert_info("  {nrow(df)} row{?s}")
+  df
+}
+
+reorganize_outline_data <- function(df)
+{
+  df <-
+    df |> 
+    # first get the right columns
+    select("filename", "tsec", "imnum", "speedHz", "tempC", 
+           matches("[xy][LR]C[12]u_\\d+"),
+           matches("(head|tail)C\\d[xy]u"),
+           matches("(head|tail)[xyz]")) |> 
+    # rename the head and tail columns
+    rename_with(~str_replace(.x, "(head|tail)(C\\d)([xy])u", "\\3B\\2u_\\1")) |> 
+    # pivot so that the outline is single x and y columns
+    pivot_longer(matches("[xy][LRB]C[12]u_(head|tail|\\d+)"),
+                 names_to = c('.value', "side", "camera", "point"),
+                 names_pattern = "([xy])([LRB])(C[12])u_(.+)") |> 
+    mutate(side = case_when(point == "head"  ~  "H",
+                            point == "tail"  ~  "T",
+                            .default = side))
+  
+  # get rid of points where nothing was found
+  df <-
+    df |> 
+    mutate(notfound = y == x) |> 
+    group_by(filename, imnum) |> 
+    mutate(notfoundfr = all(notfound)) |> 
+    ungroup() |> 
+    filter(!notfoundfr) |> 
+    select(-starts_with("notfound"))
+  
+  # and filter out points that are clear outliers
+  df <-
+    df |> 
+    group_by(filename, camera, speedHz, imnum) |> 
+    mutate(x.head = x[point == "head"],
+           x.tail = x[point == "tail"],
+           y.head = y[point == "head"],
+           y.tail = y[point == "tail"],
+           y.med = median(y, na.rm = TRUE),
+           y.L.med = median(y[side == "L"], na.rm = TRUE),
+           y.R.med = median(y[side == "R"], na.rm = TRUE),
+           width.med = abs(y.R.med - y.L.med)) |> 
+    filter((x >= x.tail) & (x <= x.head) &
+             (abs(y - y.med) <= 1.5*width.med))
+  
+  df |> 
+    ungroup() |> 
+    mutate(xctr = x - x.head,
+           yctr = y - y.head) |> 
+    select(-contains("med"), -c(x, y)) |> 
+    group_by(filename, imnum, camera) |> 
+    nest(outline = c(xctr, yctr, side, point))
+}
+
+```
+
+### Target to load in data files
+
+First group by each fish and, within each fish, every `nfilesingroup` file.
+
+Then, within each group, read in each of the data files.
+
+```{targets read_data_files}
 list(
   tar_group_by(filegroup, testfiles, id, fishgroup),
   tar_target(outlinedata1,
              purrr::map_df(filegroup$data3dfile,
                     \(f) read_data_file(datarootpath, f)),
              pattern = map(filegroup),
-             error = "continue"),
+             error = "continue")
+)
+```
+
+
+```{targets save_outline_file, tar_globals = TRUE}
+save_outline_file <- function(df, filename)
+{
+  fullfilename <- here(processeddatapath, filename)
+  arrow::write_parquet(df, fullfilename,
+                compression = "snappy")
+  fullfilename
+}
+```
+
+
+## Align points to the fish's central axis
+
+Sometimes the fish is swimming at a bit of an angle to the camera. We will use
+the SVD to find the central axis of the points in each frame so that we can
+(later) interpolate evenly spaced points along the central axis.
+
+First, this function finds the central axis. We pass in a data frame and the
+names of one or more `x` and `y` columns. We may have more than one `x` or `y`
+columns that correspond to the left and right sides of the fish. 
+```{targets get_central_axis, tar_globals = TRUE}
+get_central_axis <- function(df, x, y)
+{
+  # this slightly dumb combination gives us a single long vector if x consists
+  # multiple columns
+  x1 <- select(df, {{x}}) |> 
+    as.matrix() |> 
+    as.vector()
+  y1 <- select(df, {{y}}) |> 
+    as.matrix() |> 
+    as.vector()
+  
+  xy <- as.matrix(cbind(x1, y1))
+
+  S <- svd(xy, nu = 0, nv = 2)
+  
+  tibble(swimdirx = S$v[1,1], swimdiry = S$v[2,1])
+}
+```
+
+Then this function will rotate the `x` and `y` points so that we have points
+along the central axis and perpendicular to the axis in the `a` and `b` columns,
+respectively.
+```{targets rotate_to_swimdir, tar_globals = TRUE}
+rotate_to_swimdir <- function(df, x, y, a, b, swimdirx, swimdiry)
+{
+  # xdf <- select(df, x)
+  # ydf <- select(df, y)
+  # 
+  # if (ncol(xdf) != ncol(ydf)) {
+  #   cli::cli_abort(c("x and y must have the same number of columns",
+  #                    "i" = "x has {ncol(xdf)} column{?s} and y has {ncol(ydf)} column{?s}."))
+  # }
+  
+  df |> 
+    mutate("{a}" := .data[[x]] * swimdirx + .data[[y]] * swimdiry,
+           "{b}" := .data[[x]] * (-swimdiry) + .data[[y]] * swimdirx)
+}
+```
+
+Put it all together and compute the central axis in each frame. To avoid outliers,
+we then smooth it with a running median over `nsmooth` frames. Then we rotate
+the points so that they're aligned along the swimming direction.
+```{targets align_to_central_axis, tar_globals = TRUE}
+align_to_central_axis <- function(df, rotate = FALSE, nsmooth = 15)
+{
+  if (rotate) {
+    df |> 
+      ungroup() |> 
+      mutate(swimdir =
+               purrr::map(outline, \(df) get_central_axis(df, x = xctr, y = yctr),
+                          .progress = "Getting central axis...")) |> 
+      unnest(swimdir) |> 
+      mutate(swimdirx0 = -swimdirx,
+             swimdiry0 = -swimdiry) |> 
+      
+      # smooth the swim direction getting rid of outliers with a running median
+      group_by(filename, camera) |> 
+      arrange(filename, camera, tsec) |>
+      mutate(swimdirx = runmed(swimdirx0, nsmooth, na.action = "na.omit"),
+             swimdiry = runmed(swimdiry0, nsmooth, na.action = "na.omit"),
+             
+             swimdirmag = sqrt(swimdirx^2 + swimdiry^2),
+             
+             swimdirx = swimdirx / swimdirmag,
+             swimdiry = swimdiry / swimdirmag) |> 
+      
+      ungroup() |> 
+      mutate(outline = purrr::pmap(list(df = outline, x = "xctr", y = "yctr", 
+                                        a = "m", b = "n",
+                                        swimdirx = swimdirx, swimdiry = swimdiry),
+                                   rotate_to_swimdir,
+                                   .progress = "Rotating to central axis...")) |> 
+      mutate(outline = purrr::map(outline, duplicate_head_tail))
+  } else {
+    df |> 
+      ungroup() |> 
+      mutate(swimdirx = -1,
+             swimdiry = 0) |> 
+      mutate(outline = purrr::pmap(list(df = outline, x = "xctr", y = "yctr", 
+                                        a = "m", b = "n",
+                                        swimdirx = swimdirx, swimdiry = swimdiry),
+                                   rotate_to_swimdir,
+                                   .progress = "Rotating to central axis...")) |> 
+      mutate(outline = purrr::map(outline, duplicate_head_tail))
+  }
+}
+
+```
+
+
+### Target to align the points to the swimming direction
+
+```{targets align_to_swimdir}
+list(
   tar_target(outlinedata2,
-             even_outline_spacing(outlinedata1),
+             align_to_central_axis(outlinedata1, rotate = TRUE),
              pattern = map(outlinedata1),
-             error = "continue"),
+             error = "continue")
+)
+```
+
+## Interpolate to evenly spaced points along the new axis
+
+We need to interpolate our rotated points so that they're evenly spaced along the
+`m` axis. But for that, we need to know what the maximum value for `m` is for
+each fish. That's roughly (but not exactly) equal to the fish's length.
+
+This function looks for the median value (across frames) of the maximum `m`, which
+is a fairly good (robust to outliers) method for getting the reasonable maximum. It
+then interpolates `npoints` evenly spaced points along the length.
+
+```{targets get_even_spacing, tar_globals = TRUE}
+get_even_spacing <- function(df, npoints = 20)
+{
+  m.max <-
+    df |> 
+    ungroup() |> 
+    mutate(m.max = map_vec(outline, \(df) max(df$m, na.rm = TRUE))) |> 
+    summarize(m.max = median(m.max, na.rm = TRUE)) |> 
+    pull(m.max)
+  
+  dm <- m.max / ceiling(m.max / npoints)
+  m.even <- seq(0, m.max, by = dm)
+  
+  data.frame(m.even)
+}
+```
+
+### Target to get the even spacing
+
+This target gets the even spacing `m.even` variable for each fish, individually.
+Note that this target isn't branched over fish and groups the way the previous
+ones were, because it needs to include all of the data for an individual fish.
+```{targets even}
+list(
   tar_target(m.even, outlinedata2 |> 
                mutate(filenamedata = process_filename(filename)) |> 
                mutate(fish = pluck(filenamedata, "fish")) |> 
                group_by(fish) |> 
                group_modify(\(df,k) get_even_spacing(df)) |> 
-               nest(m.even = m.even)),
+               nest(m.even = m.even))
+)
+```
+
+## Do the interpolation
+
+Now we'll actually interpolate the outline points to the even spacing, as defined
+in `m.even`.
+
+This function takes the `m` and `n` column names, then interpolates the `n` values
+so that they're evenly spaced along `m`. We have some error checking in case
+we have too few points.
+```{targets interp_even_side, tar_globals = TRUE}
+interp_even_side <- function(df, m,n, m0, pt, names_suffix = "0")
+{
+  # this structure with eval_tidy belowe is much faster than dplyr::pull
+  m <- enquo(m)
+  n <- enquo(n)
+  
+  df <-
+    df |> 
+    distinct(!!m, .keep_all = TRUE)
+
+  m1 <- rlang::eval_tidy(m, data = df)
+  n1 <- rlang::eval_tidy(n, data = df)
+  
+  if (sum(!is.na(m1) & !is.na(n1)) <= 3) {
+    mn <- tibble("{{m}}{names_suffix}" := rep_along(m0, NA_real_),
+                 "{{n}}{names_suffix}" := rep_along(m0, NA_real_),
+                 !!pt := seq_along(m0))
+  } else {
+    m1max <- max(m1, na.rm = TRUE)
+    m0[length(m0)] <- m1max
+    
+    mn <- approx(m1, n1, xout = m0) |> 
+      as_tibble()
+    
+    colnames(mn) <- c(paste0(quo_name(m), names_suffix),
+                      paste0(quo_name(n), names_suffix))
+    
+    mn[,pt] <- seq_along(m0)
+  }
+  
+  mn
+}
+```
+
+We also need to pull some data out of the filename. This function does that.
+We can get the fish, the flow tunnel speed, and the date.
+```{targets process_filename, tar_globals = TRUE}
+process_filename <- function(filename)
+{
+  m <- str_match(filename, "(scup\\d+)_([\\d.]+)hz_(\\d{4}Y_\\d{2}M_\\d{2}D_\\d{2}h_\\d{2}m_\\d{2}s)")
+  data <- m[,2:4] |> 
+    as_tibble(.name_repair = "minimal")
+  
+  colnames(data) <- c("fish", "speedHz", "date")
+  
+  data |> 
+    mutate(date = lubridate::ymd_hms(date, tz = "America/New_York"))
+}
+```
+
+### Target to do the interpolation
+
+```{targets do_interp_even}
+list(
   tar_target(outlinedata,
              outlinedata2 |>
+               # get the fish id
                mutate(filenamedata = process_filename(filename),
                       fish = pluck(filenamedata, "fish")) |> 
                left_join(m.even, by = "fish") |> 
                ungroup() |> 
+               
+               # pull out the outline
                unnest(outline) |>
                select(-c(xctr, yctr, point)) |>
+               
+               # and make sure everything is arranged in order by file, then
+               # image, then along the m axis
                arrange(filename, imnum, m) |> 
                nest(edge = c(m,n)) |>
                mutate(edge.even =
-                        purrr::map2(edge, m.even, \(df, m.even) interp_even_side(df, m,n, m.even$m.even,
-                                                                "pt", names_suffix = ''),
-                                   .progress = list(name = "Interpolating even edges",
-                                                    format_done = "Total time: {cli::pb_elapsed}",
-                                                    clear = FALSE))) |> 
+                        purrr::map2(edge, m.even, 
+                                    \(df, m.even) interp_even_side(df, m,n, m.even$m.even,
+                                                                   "pt", names_suffix = ''),
+                                    .progress = list(name = "Interpolating even edges",
+                                                     format_done = "Total time: {cli::pb_elapsed}",
+                                                     clear = FALSE))) |> 
                select(-edge),
              pattern = map(outlinedata2)),
+  
+  # save the output in a parquet file
   tar_target(outlinedatafile, 
              save_outline_file(outlinedata, "outlinedata.parquet"),
              format = "file")
 )
 ```
 
+# Convert outlines to midlines
 
-```{targets check_midlines}
+## Check for bad points in the outline
+
+Simple function to get the width. If we group by fish, filename, image, camera,
+and point along the body, we should have two `n` points remaining - the left side
+and the right. The difference is an estimate of the width at that point.
+
+Once we've do that, we group by the fish and point and take a median to get the
+overall outline of the fish.
+```{targets get_width, tar_globals = TRUE}
+get_width <- function(df)
+{
+  df |> 
+    unnest(edge.even) |> 
+    group_by(fish, filename, imnum, camera, pt) |> 
+    mutate(width = abs(n[2] - n[1])) |> 
+    group_by(fish, pt) |> 
+    summarize(width = median(width, na.rm = TRUE))
+}
+```
+
+Then we want to check when points in the outline are some large amount away
+from where we expect them, based on the width of the fish at that point.
+
+The crucial bit is that anterior outline points (`pt < 20`) should be mostly on 
+one side (ie, left points on the left and right points on the right). Tail points
+(`pt >= 20`) could be further off to one side, but still not too far.
+
+We define a frame overall as "bad" if it has more than 3 bad points.
+```{targets get_bad_frames, tar_globals = TRUE}
+find_bad_frames <- function(df, width, nbadcutoff = 3)
+{
+  # overall mean width of the fish at all points along the body
+  meanwidth <- mean(width$width, na.rm = TRUE)
+  
+  df |> 
+    ungroup() |> 
+    unnest(edge.even) |> 
+    mutate(side_sign = case_when(side == 'L'  ~  1,
+                                 side == 'R'  ~  -1,
+                                 .default = NA)) |> 
+    
+    # join the main fish data set with the much shorter width dataset
+    left_join(width, by = c("fish", "pt")) |> 
+    
+    # also add the meanwidth into the data set
+    mutate(meanwidth = meanwidth) |> 
+    
+    # look at points in each frame / time separately
+    group_by(filename, speedHz, camera, tsec) |> 
+    mutate(goodpt = 
+             case_when(
+               # anterior points should be mostly on the left or right
+               pt < 20   ~  between(n*side_sign, -0.5*width, 2*width),
+               # posterior points shouldn't be further than 2*meanwidth away
+               pt >= 20  ~  between(n*side_sign, -2*meanwidth, 2*meanwidth)),
+           
+           # sum up the number of good points
+           ngood = sum(goodpt, na.rm = TRUE),
+           
+           # define a frame as bad if it has more than nbadcutoff bad points
+           bad = ngood < n() - nbadcutoff)
+}
+```
+
+This target groups by each fish, not smaller groups, because the width and other
+calculations are for all of the fish data.
+```{targets do_get_width}
 list(
   tar_group_by(fishdata, outlinedata, fish),
   tar_target(width, 
              fishdata |> 
                get_width(),
-             pattern = map(fishdata)),
-  tar_target(data_good,
-             fishdata |> 
-               remove_bad_frames(width),
-             pattern = map(fishdata, width))
+             pattern = map(fishdata))
 )
 ```
 
-```{targets get_com}
+And then this target looks for the bad frames. We split it up into two steps so
+that we can check the bad frames and make sure we're identifying them correctly
+before we eliminate them from the data frame
+```{targets check_midlines}
+list(
+  tar_target(data_good1,
+             fishdata |> 
+               find_bad_frames(width),
+             pattern = map(fishdata, width)),
+  tar_target(data_good,
+             data_good1 |> 
+               filter(!bad))
+)
+```
+
+## Get the approximate center of mass
+
+We're going to center everything on the approximate center of mass, then take the
+mean of the left and right points to get a midline point.
+
+The center of mass is approximately
+$$ n_{com} = \left( \sum_i [0.5 * (n_{left, i} + n_{right, i}) * width_i] \right) /
+  \sum_i width_i $$
+
+or
+
+$$ n_{com} = 0.5 \left( \sum_{side} \sum_i n_{side, i} width_i \right) /
+  \sum_i width_i $$
+  
+The double sum above is performed because we do not group by side, so it sums over
+both the sides and along the body.
+```{targets get_com, tar_globals = TRUE}
+get_com <- function(df, width)
+{
+  df |> 
+    group_by(filename, fish, speedHz, tsec, imnum, pt, side) |> 
+    
+    # first take the mean position on each side, saving the width value
+    summarize(across(c(n, m), \(x) mean(x, na.rm = TRUE)),
+              across(c(width), first)) |> 
+    
+    # then sum up the left and right sides, weighted by the width, which gives
+    # us an area-weighted center of mass.
+    mutate(com = 0.5 * sum(n * width, na.rm = TRUE) / sum(width)) 
+}
+```
+
+```{targets do_get_com}
 list(
   tar_target(comdata,
              data_good |> 
@@ -257,6 +756,112 @@ list(
 )
 ```
 
+## Get the midline points and even out the spacing
+
+Now, we take the mean of the left and right side points. We need to be careful about
+cases when we have uneven numbers of points, since some points can be missing if
+they weren't detected correctly.
+
+```{targets get_midline_uneven, tar_globals = TRUE}
+get_midline_uneven <- function(df)
+{
+  df |> 
+    ungroup() |> 
+    mutate(n = if_else(m == 0, 0, n)) |> 
+    group_by(filename, fish, speedHz, tsec, imnum, pt, side) |> 
+    
+    # if we have multiple left or right points (from having two cameras), then
+    # take the mean on each side first
+    summarize(n = mean(n, na.rm = TRUE),
+              across(c(com, m, width), first)) |> 
+    mutate(side_sign = case_when(side == 'L'  ~  1,
+                                 side == 'R'  ~  -1,
+                                 .default = NA)) |> 
+    summarize(
+      # check the number of non-NA points
+      ngood = sum(!is.na(n)),
+      
+      # if we have two (one left, one right), then we just take the mean
+      mid = case_when(ngood == 2  ~  mean(n),
+                      # otherwise, we subtract off half the width, being careful
+                      # to go in the right direction, based on the side_sign
+                      ngood == 1  ~  sum(n - 0.5 * side_sign * width, na.rm = TRUE),
+                      .default = NA),
+      across(c(com, m, width), first))
+}
+```
+
+These points, even though they should be (approximately) evenly spaced along `m`,
+are not spaced evenly along the arc length, which is what we want. So we'll interpolate
+AGAIN to get even spacing along arc length.
+
+```{targets even_points, tar_globals = TRUE}
+even_points <- function(df, s,m,n, s.frac)
+{
+  s <- enquo(s)
+  m <- enquo(m)
+  n <- enquo(n)
+
+  s1 <- rlang::eval_tidy(s, data = df)
+  m1 <- rlang::eval_tidy(m, data = df)
+  n1 <- rlang::eval_tidy(n, data = df)
+  
+  if (any(is.na(s1) | is.na(m1) | is.na(n1))) {
+    dfnew <- tibble(s.even = rep_along(s.frac, NA_real_),
+                    x = rep_along(s.frac, NA_real_),
+                    y = rep_along(s.frac, NA_real_))
+  }
+  else {
+    s0 <- s.frac * s1[length(s1)]
+    
+    tryCatch({
+      m.even <- approx(s1, m1, xout = s0)
+      n.even <- approx(s1, n1, xout = s0)
+    },
+    warning = function(w) {
+      cli::cli_alert_warning(w)
+    })
+    
+    dfnew = cbind(data.frame(pt = seq_along(s0)),
+                  data.frame(m.even), 
+                  data.frame(n.even$y))
+  }
+  
+  colnames(dfnew) <- c("pt", "s.even",
+                       paste0(quo_name(m), ".even"),
+                       paste0(quo_name(n), ".even"))
+  
+  # bind_cols(df, dfnew)
+  dfnew
+}
+
+
+```
+
+
+Then this function runs `even_points` on each midline, so that we end up with
+evenly spaced points along the arc length.
+```{targets even_midline_spacing, tar_globals = TRUE}
+even_midline_spacing <- function(df, s.frac)
+{
+  df |> 
+    group_by(filename, imnum) |> 
+    mutate(ds1 = sqrt((m - lag(m))^2 + (mid - lag(mid))^2),
+           ds1 = replace_na(ds1, 0),
+           s1 = cumsum(ds1)) |> 
+    select(-ds1) |> 
+    group_by(fish, filename, imnum) |> 
+    nest(midline = c(pt, s1,m,mid)) |> 
+    ungroup() |> 
+    mutate(mid.even = purrr::map(midline, \(df) even_points(df, s1,m,mid, s.frac),
+                                 .progress = TRUE)) |> 
+    select(-midline) |> 
+    unnest(mid.even)
+}
+
+```
+
+Now step through everything and even out the midline spacing.
 ```{targets interpolate_even}
 list(
   tar_group_by(fishcomdata, comdata, fish),
@@ -267,7 +872,7 @@ list(
              even_midline_spacing(midpoints, s.frac),
              pattern = map(midpoints)),
   tar_target(evenchunks,
-             get_midline_time_chunks(evenpoints, minchunkdur = 2),             
+             get_midline_time_chunks(evenpoints, maxchunkgap = 0.04, minchunkdur = 2),             
              pattern = map(evenpoints)),
   tar_target(eventime,
              even_midline_timing(evenpoints, evenchunks, dt),
@@ -280,6 +885,57 @@ list(
 ```
 
 # Testing
+
+```{r eval=FALSE}
+od1 <- tar_read(outlinedata1, branches = 1)
+head(od1)
+od1$outline[[1]]
+```
+
+```{r eval=FALSE}
+od2 <- tar_read(outlinedata2, branch = 1)
+head(od2)
+od2$outline[[1]]
+```
+
+```{r eval=FALSE}
+od2 |> 
+  arrange(filename, speedHz, camera, tsec) |> 
+  group_by(filename, camera) |> 
+  mutate(swimdirxs = runmed(swimdirx, 15, na.action = "na.omit"),
+         swimdirys = runmed(swimdiry, 15, na.action = "na.omit"),
+         swimdirsmag = sqrt(swimdirxs^2 + swimdirys^2),
+         swimdirxs = swimdirxs / swimdirsmag,
+         swimdirys = swimdirys / swimdirsmag) |> 
+  ggplot(aes(x = tsec)) +
+  geom_line(aes(y = swimdiry, group = camera)) +
+  geom_line(aes(y = swimdirys, group = camera), color = "green") +
+  facet_wrap(~filename, scales='free') +
+  xlim(33,35)
+```
+
+```{r eval=FALSE}
+od2 |> 
+  ungroup() |> 
+  distinct(speedHz)
+```
+
+```{r eval=FALSE}
+od2 |> 
+  group_by(speedHz) |> 
+  slice_sample(n = 3) |> 
+  unnest(outline) |>
+  arrange(filename, speedHz, imnum, point) |> 
+  filter(speedHz %in% c(5, 9, 13, 20, 25, 29,5)) |> 
+  ggplot(aes(x = m, y = n)) +
+  geom_path(data = ~ filter(.x, !(point %in% c("head", "tail"))),
+            aes(color = imnum, group = interaction(imnum,camera,side))) +
+  geom_point(data = ~ filter(.x, point %in% c("head", "tail")),
+             color = "red") +
+  facet_wrap(~ speedHz) +
+  coord_fixed()
+
+```
 
 ```{r eval=FALSE}
 evenpoints <- tar_read(evenpoints, branches = 1)
@@ -312,21 +968,64 @@ head(even1)
 even1$midline[[1]]
 ```
 
-```{r}
-tar_read(evenpoints, branch = 1) |> 
-  ungroup() |> 
-  distinct(speedHz)
+```{r eval=FALSE}
+df <- tar_read(data_good1, branch = 1)
 ```
 
-```{r}
-tar_read(evenpoints, branch = 1) |> 
-  get_midline_time_chunks(maxchunkgap = 0.04, minchunkdur = 2) |> 
+```{r eval=FALSE}
+df |> 
   ungroup() |> 
-  distinct(speedHz)
+  group_by(filename, speedHz, camera, tsec) |> 
+  transmute(goodpt = 
+           case_when(pt < 20   ~  between(n*side_sign, -0.5*width, 2*width),
+                     pt >= 20  ~  between(n*side_sign, -2*meanwidth, 2*meanwidth)),
+         ngood = sum(goodpt, na.rm = TRUE),
+         bad = n() - ngood > 3) |> 
+  group_by(speedHz, camera) |> 
+  summarize(badpct = sum(bad) / n())
+         
+```
+
+```{r  eval=FALSE}
+d <- tar_read(evenpoints, branch = 1)
+```
+
+```{r  eval=FALSE}
+d |> 
+  group_by(filename, fish, speedHz, imnum) |> 
+  slice_tail(n = 1) |> 
+  arrange(filename, fish, speedHz, tsec)
+```
+
+```{r  eval=FALSE}
+d |> 
+  ungroup() |> 
+  group_by(filename, fish, speedHz, tsec) |> 
+  summarize(ngood = sum(!is.na(mid.even))) |> 
+  # filter(ngood == max(ngood)) |> 
+  arrange(filename, fish, speedHz, tsec) |> 
+  
+  group_by(filename, fish, speedHz) |>
+  mutate(tfill = tsec) |>
+  fill(tfill, .direction = "down") |>
+  # ggplot(aes(x = tfill, y = n)) +
+  # geom_point() +
+  # facet_wrap(~ speedHz)
+    # mutate(dt = tfill - lag(tfill),
+    #        newchunk = is.na(dt) | dt > maxchunkgap,
+    #        chunk = cumsum(newchunk)) |> 
+    # group_by(filename, fish, speedHz, chunk) |> 
+    # mutate(chunkdur = max(tsec, na.rm = TRUE) - min(tsec, na.rm = TRUE)) |> 
+    # filter(chunkdur > minchunkdur)
+  
+  # get_midline_time_chunks(maxchunkgap = 0.04, minchunkdur = 2) |> 
+  # ungroup() |>
+  # distinct(speedHz) |> 
+  identity()
 
 ```
 
-```{r}
+```{r eval=FALSE}
 tar_read(evenchunks) |> 
   ungroup() |> 
   distinct(speedHz) |> 
