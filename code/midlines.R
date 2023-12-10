@@ -1,5 +1,43 @@
 require(dplyr)
 
+add_head_tail_points <- function(df, k)
+{
+  ptlo <- min(df$point, na.rm = TRUE)
+  pthi <- max(df$point, na.rm = TRUE)
+  
+  dfh <- df |> 
+    filter(point == ptlo)
+  dft <- df |> 
+    filter(point == pthi)
+  
+  assertthat::assert_that(nrow(dfh) == 1)
+  assertthat::assert_that(nrow(dft) == 1)
+  
+  dfh <- dfh |> 
+    mutate(point = ptlo-1,
+           xctr_L = 0,
+           yctr_L = 0,
+           xctr_R = 0,
+           yctr_R = 0)
+  
+  dft <- dft |> 
+    mutate(point = pthi + 1,
+           xctr_L = x.tail - x.head,
+           yctr_L = y.tail - y.head,
+           xctr_R = x.tail - x.head,
+           yctr_R = y.tail - y.head)
+  
+  bind_rows(dfh, df, dft)
+}
+
+## CONTINUE here
+## Make spline curves and get perpendicular vector at each point on left
+# and right. Then look for intersection of perpendicular vector with curve
+# on opposite side (how??) and find the halfway point
+get_midline <- function(df, k)
+{
+  
+}
 
 duplicate_head_tail <- function(df)
 {
