@@ -281,6 +281,77 @@ d1 |>
                       scaleanchor = "x",
                       scaleratio = 1))
 ```
+
+```{r}
+d2 <- 
+  d1 |> 
+  filter(tsec >= 14 & tsec <= 14.5) |> 
+  ungroup() |> 
+  mutate(outline_even = purrr::map(outline, 
+                                   \(out) get_midline(out, xctr,yctr,side,
+                                                      spar = 0.3, npt = 26)))
+```
+
+```{r}
+d2 |> 
+  unnest(outline_even) |> 
+  group_by(camera, imnum) |> 
+  plot_ly() |> 
+  add_lines(x = ~xL, y = ~yL, name = "left") |> 
+  add_lines(x = ~xR, y = ~yR, name = "right") |> 
+  add_lines(x = ~xmid, y = ~ymid, name = "mid") |> 
+  layout(yaxis = list(
+    scaleanchor = "x",
+    scaleratio = 1))
+
+```
+
+```{r}
+outeven <-
+  d1$outline[[1]] |> 
+  get_midline(xctr,yctr,side, spar = 0.3, debug = FALSE)
+
+outeven
+
+outeven |> 
+  plot_ly() |> 
+  add_markers(x = ~xL0, y = ~yL0, name = "L0") |> 
+  add_markers(x = ~xR0, y = ~yR0, name = "R0") |> 
+  add_lines(x = ~xL, y = ~yL, name = "L") |> 
+  add_lines(x = ~xR, y = ~yR, name = "R") |> 
+  add_lines(x = ~xmid, y = ~ymid, name = "mid") |> 
+  layout(yaxis = list(
+    scaleanchor = "x",
+    scaleratio = 1))
+
+```
+
+```{r}
+sps <-
+  d1$outline[[1]] |> 
+  duplicate_head_tail() |> 
+  group_by(side) |> 
+  arrange(desc(xctr), .by_group = TRUE) |> 
+  mutate(s = seq(0, 1, by = 1/(n()-1))) |> 
+  ungroup() |>   
+  pivot_wider(values_from = c(xctr, yctr),
+              names_from = side) |> 
+  summarize(across(c(xctr_L, xctr_R, yctr_L, yctr_R),
+                   \(y) list(stats::smooth.spline(x = s, y = y,
+                                             spar = 0.3, cv = NA))))
+```
+
+
+```{r}
+s1 <- seq(0,1, by = 1/19)
+
+sps |> 
+  reframe(across(dplyr::everything(), 
+                 \(sp) predict(sp[[1]], x = s1)$y,
+                 .names = "{.col}_s"))
+```
+
+
 ```{r}
 d2 <-
   d1 |> 
@@ -292,17 +363,150 @@ d2 <-
 
 ```{r}
 d3 <- d2 |> 
-  select(imnum, xctr,yctr, x.head,x.tail, y.head,y.tail, point, side) |> 
-  pivot_wider(values_from = c(xctr, yctr), names_from = "side") |> 
-  select(-ends_with("_T"), -ends_with("_H")) |> 
-  mutate(point = as.numeric(point)) |> 
-  group_by(imnum) |> 
-  group_modify(add_head_tail_points)
+  select(imnum, camera, xctr,yctr, point, side) |> 
+  group_by(imnum, camera) |> 
+  group_modify(duplicate_head_tail)
+```
+
+```{r}
+d3
 ```
 
 
 ```{r}
-d3 
+d4 <-
+  d3 |> 
+  group_by(imnum, camera, side) |> 
+  dplyr::arrange(desc(xctr), .by_group = TRUE) |> 
+  mutate(ds = sqrt((xctr - lag(xctr))^2 + (yctr - lag(yctr))^2)) |> 
+  group_by(point) |> 
+  mutate(ds_med = median(ds, na.rm = TRUE),
+         ds_iqr = IQR(ds, na.rm = TRUE),
+         isoutlier = abs(ds - ds_med) > 2*ds_iqr)
+
+d4 |> 
+  filter(imnum == 2160, camera == "C1", side == "R") |> 
+  group_by(imnum, camera, side) |> 
+  plot_ly(x = ~point, y = ~ds, color = ~isoutlier) |> 
+  add_markers() |> 
+  add_lines(y = ~ds_med, color = ~side, name = "median")
+```
+
+```{r}
+d4s <-
+  d4 |> 
+  filter(imnum == 2160, camera == "C1") |> 
+  smooth_outline(xctr, yctr, side, spar = 0.3) |> 
+  group_by(s) |> 
+  mutate(xmid = mean(xctr_s),
+         ymid = mean(yctr_s)) |> 
+  ungroup()
+```
+
+```{r}
+d4 |> 
+  filter(imnum == 2160, camera == "C1") |> 
+  plot_ly(x = ~xctr, y = ~yctr, color = ~side) |> 
+  add_markers() |> 
+  add_lines(data = d4s, x = ~xctr_s, y = ~yctr_s, color = ~side) |> 
+  add_lines(data = d4s, x = ~xmid, y = ~ymid) |> 
+  layout(yaxis = list(
+                      scaleanchor = "x",
+                      scaleratio = 1))
+```
+
+```{r}
+d5 <-
+  d4 |> 
+  group_by(camera, imnum) |> 
+  group_modify(\(df, k) smooth_outline(df, xctr,yctr, side, spar = 0.3)) |> 
+  group_by(camera, imnum, s) |> 
+  mutate(xmid = mean(xctr_s),
+         ymid = mean(yctr_s)) |> 
+  ungroup()
+
+d5
+```
+
+```{r}
+d5 |> 
+  filter(camera == "C1") |> 
+  group_by(imnum, side) |> 
+  plot_ly(x = ~xctr_s, y = ~yctr_s) |> 
+  add_lines() |> 
+  add_lines(x = ~xmid, y = ~ymid) |> 
+  layout(yaxis = list(
+                      scaleanchor = "x",
+                      scaleratio = 1))
+```
+
+```{r}
+df1 <-
+  d4 |> 
+  filter(imnum == 2160, camera == "C1", side == "R")
+
+```
+
+```{r}
+sp <- with(df1,
+           stats::smooth.spline(yctr, spar = 0.5, cv = TRUE))
+
+df1$yctrs <- fitted(sp)
+
+df1
+
+df1 |> 
+  ungroup() |> 
+  plot_ly(x = ~point) |> 
+  add_markers(y = ~yctr) |> 
+  add_lines(y = ~yctrs)
+```
+
+```{r}
+sp
+```
+
+```{r}
+spline_ocv <- function(df, x,y, p)
+{
+  df1 <- df |> 
+    select(c({{x}}, {{y}})) |> 
+    rename(x = 2, y = 3)
+
+  sp <- with(df1,
+             stats::smooth.spline(x, y, spar = p))
+  xy <- predict(sp)
+  df1$ys <- xy$y
+  
+  df1$ycv <- NA_real_
+  df1$yloo <- NA_real_
+  
+  for (i in seq(2,nrow(df)-1)) {  
+    k <- c(seq(1,i-1), seq(i+1,nrow(df)))
+    sp1 <- with(df1[k,],
+               stats::smooth.spline(x, y, spar = p))
+    xy1 <- predict(sp1, x = df1$x[i])
+    
+    df1$yloo[i] <- xy1$y
+    df1$ycv[i] <- xy1$y - df1$y[i] 
+  }
+  
+  df |> 
+    ungroup() |> 
+    mutate("{{y}}_s" := df1$ys,
+           "{{y}}_loo" := df1$yloo,
+           "{{y}}_cv" := df1$ycv)
+}
 ```
   
+```{r}
+df1 |> 
+  spline_ocv(xctr, yctr, 0.5) |> 
+  ungroup() |> 
+  plot_ly(x = ~xctr) |>
+  add_markers(y = ~yctr) |> 
+  add_markers(y = ~yctr_loo) |> 
+  add_lines(y = ~yctr_s)
+```
+
   

@@ -1,42 +1,209 @@
 require(dplyr)
 
-add_head_tail_points <- function(df, k)
+#' Gets the midline from an outline
+#' 
+#' Takes a data frame that contains (at least) columns corresponding to
+#' x and y coordinates of the outline and a column indicating which side
+#' ("L" or "R").
+#'
+#' ## Steps:
+#' 1. Uses a smoothing spline to smooth points on each side with smoothing
+#'    parameter spar.
+#' 2. Computes the arc length along each side based on the smoothed points.
+#' 3. Uses the same smoothing spline to re-interpolate points that are evenly
+#'    spaced along the arc length of each outline side.
+#' 4. Gets the midline by taking the midpoint between each point on the now
+#'    evenly spaced left and right outline points. Note that this midline is
+#'    not evenly spaced in terms of arc length.
+#' 5. Computes the arc length along the midline
+#' 6. Interpolates evenly spaced points along the midline, using a smoothing
+#'    spline with with an spar value of 0, so that it does not smooth the
+#'    midline more.
+#' 7. Uses the original left and right smoothing splines to re-interpolate points
+#'    along the outline that correspond to the evenly spaced midline points. These
+#'    will then not be evenly spaced relative to the arc length along the outline.
+#'    
+#' @param outline Data frame that contains the outline
+#' @param x,y,side Columns in the data frame with the `x`, `y`, and `side` 
+#'      variables (unquoted)
+#' @param spar Smoothing parameter for `smooth.spline`. Default = 0.3
+#' @param headtailweight The head and tail points are located in a different way
+#'      and so we usually want to give them more so that the spline doesn't
+#'      smooth them as much. All of the middle points have weight 1. Default = 10
+#' @param npt Number of points to interpolate in the end. Default = 26
+#' @param debug Return debug output if TRUE.
+get_midline <- function(outline, x,y,side,
+                        spar = 0.3, headtailweight = 10,
+                        npt = 26, debug = FALSE)
 {
-  ptlo <- min(df$point, na.rm = TRUE)
-  pthi <- max(df$point, na.rm = TRUE)
+  # pull out the columns from the outline data frame and rename them
+  # also generate the weight. Duplicate the head and tail points so that
+  # they are included on both the left and right sides
+  outline <- outline |> 
+    select(c({{x}}, {{y}}, {{side}})) |> 
+    rename(x = 1, y = 2, side = 3) |> 
+    mutate(w = case_when(side == "H"  ~  headtailweight,
+                         side == "T"  ~  headtailweight,
+                         .default = 1)) |> 
+    duplicate_head_tail()
   
-  dfh <- df |> 
-    filter(point == ptlo)
-  dft <- df |> 
-    filter(point == pthi)
+  # sort the data by x coordinate and number the points along each side
+  # should work correctly even if there are not the same number of points
+  # on each side
+  outline <- outline |> 
+    group_by(side) |> 
+    arrange(desc(x), .by_group = TRUE) |> 
+    mutate(pt = seq(0, n()-1))
   
-  assertthat::assert_that(nrow(dfh) == 1)
-  assertthat::assert_that(nrow(dft) == 1)
+  # smooth the left side
+  splinesL <- outline |> 
+    filter(side == "L") |> 
+    smooth_left_right(spar, npt)
   
-  dfh <- dfh |> 
-    mutate(point = ptlo-1,
-           xctr_L = 0,
-           yctr_L = 0,
-           xctr_R = 0,
-           yctr_R = 0)
+  outlineL <- splinesL$outlineeven |> 
+    rename(xL = x,
+           yL = y,
+           lenL = len,
+           outptL = outpt)
   
-  dft <- dft |> 
-    mutate(point = pthi + 1,
-           xctr_L = x.tail - x.head,
-           yctr_L = y.tail - y.head,
-           xctr_R = x.tail - x.head,
-           yctr_R = y.tail - y.head)
+  # smooth the right side
+  splinesR <-
+    outline |> 
+    filter(side == "R") |> 
+    smooth_left_right(spar, npt)
+
+  outlineR <- splinesR$outlineeven |> 
+    rename(xR = x,
+           yR = y,
+           lenR = len,
+           outptR = outpt) |> 
+    select(-s)
   
-  bind_rows(dfh, df, dft)
+  # join the smoothed left and right sides
+  # calculate the fractional difference between the lengths of the left and
+  # right sides. If they're very different, that suggests that there was an
+  # outlier
+  # also generate the unevenly spaced midline
+  outline_even <- bind_cols(outlineL, outlineR) |> 
+    mutate(lendiff = abs(lenL[1] - lenR[1]) / (0.5*(lenL[1] + lenR[1])),
+           xmid0 = 0.5*(xL + xR),
+           ymid0 = 0.5*(yL + yR),
+           ds = sqrt((xmid0 - lag(xmid0))^2 + (ymid0 - lag(ymid0))^2))
+  
+  outline_even$ds[1] <- 0
+  
+  # calculate the arc length along the midline
+  outline_even <- outline_even |> 
+    mutate(smid = cumsum(ds),
+           smid = smid / last(smid),
+           w = case_when(s == 0  ~  headtailweight,
+                         s == 1  ~  headtailweight,
+                         .default = 1))
+
+  # and make the splines to interpolate along the midline
+  splinesM <- with(outline_even,
+                   list(
+                     xsp = stats::smooth.spline(x = smid, y = xmid0,
+                                                spar = 0, cv = NA),
+                     ysp = stats::smooth.spline(x = smid, y = ymid0,
+                                                spar = 0, cv = NA)))
+  
+  # to generate the corresponding outline points, we have to figure out
+  # how to map the midline arc length coordinate to the original point numbers
+  # for the outlines. These splines do that
+  ptL <- with(outline_even,
+              spline(x = smid, y = outptL, xout = s)$y)
+  ptR <- with(outline_even,
+              spline(x = smid, y = outptR, xout = s)$y)
+  
+  # build up the evenly spaced midline and corresponding outline
+  outline_even <- outline_even |> 
+    rename(xL0 = xL, yL0 = yL, xR0 = xR, yR0 = yR) |> 
+    mutate(xmid = predict(splinesM$xsp, x = s)$y,
+           ymid = predict(splinesM$ysp, x = s)$y,
+           xL = predict(splinesL$splines$xsp, x = ptL)$y,
+           yL = predict(splinesL$splines$ysp, x = ptL)$y,
+           xR = predict(splinesR$splines$xsp, x = ptR)$y,
+           yR = predict(splinesR$splines$ysp, x = ptR)$y)
+  
+  if (debug) {
+    outline_even
+  } else {
+    outline_even |> 
+      select(s, xmid,ymid, xL,yL, xR,yR, lendiff)
+  }
 }
 
-## CONTINUE here
-## Make spline curves and get perpendicular vector at each point on left
-# and right. Then look for intersection of perpendicular vector with curve
-# on opposite side (how??) and find the halfway point
-get_midline <- function(df, k)
+#' Smooths and evens spacing for one side of the outline
+#' 
+#' Smooths the raw outline points, then calculates the arc length along the
+#' smoothed curve. Uses that arc length to interpolate the location of points
+#' that are evenly spaced in terms of arc length.
+#' 
+#' @param df Data frame with columns `x`, `y`, and `w`
+#' @param spar Smoothing parameter for `smooth.spline`
+#' @param npt Number of points to interpolate
+#' 
+#' @returns A list with elements
+#' * `outlineeven` Data frame with columns 
+#'   - `s` arc length
+#'   - `outpt` point number, based on the original integer point numbers
+#'   - `len` total length of the curve
+#'   - `x`, `y` Smoothed and evenly spaced coordinates of the curve
+#' * `splines` A list with elements `xsp` and `ysp`, which are the splines that
+#'   map from point number to `x` and `y` coordinates, respectively
+smooth_left_right <- function(df, spar, npt)
 {
+  # Run the first smoothing splines
+  splines <-
+    with(df,
+       list(
+         xsp = stats::smooth.spline(x = pt, y = x,
+                                    spar = spar, w = w, cv = NA),
+         ysp = stats::smooth.spline(x = pt, y = y,
+                                    spar = spar, w = w, cv = NA)
+       )
+    )
   
+  # Get the smooth x and y coordinates
+  outlinesmooth <- 
+    with(splines,
+         tibble(
+           pt = df$pt,
+           xsm = predict(xsp)$y,
+           ysm = predict(ysp)$y,
+         )
+    )
+  
+  # Build the arc length
+  outlinesmooth <- outlinesmooth |> 
+    mutate(ds = sqrt((xsm - lag(xsm))^2 + (ysm - lag(ysm))^2))
+  
+  outlinesmooth$ds[1] <- 0
+  
+  outlinesmooth <- outlinesmooth |> 
+    mutate(
+      s_act = cumsum(ds),
+      len = last(s_act),
+      s_act = s_act / len)
+  
+  s <- seq(0, 1, 1/(npt-1))
+  
+  # Map arc length back to point numbers
+  pt_even <- with(outlinesmooth,
+                  spline(s_act, pt, xout = s)$y)
+  
+  # And interpolate to evenly spaced arc length
+  outlineeven <-
+    with(splines,
+         tibble(s = s,
+                outpt = pt_even,
+                len = outlinesmooth$len[1],
+                x = predict(xsp, x = pt_even)$y,
+                y = predict(ysp, x = pt_even)$y))
+  
+  list(outlineeven = outlineeven,
+       splines = splines)
 }
 
 duplicate_head_tail <- function(df)
