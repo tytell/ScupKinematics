@@ -32,7 +32,7 @@ require(dplyr)
 #'      smooth them as much. All of the middle points have weight 1. Default = 10
 #' @param npt Number of points to interpolate in the end. Default = 26
 #' @param debug Return debug output if TRUE.
-get_midline <- function(outline, x,y,side,
+get_midline <- function(outline,
                         spar = 0.3, headtailweight = 10,
                         npt = 26, debug = FALSE)
 {
@@ -40,8 +40,6 @@ get_midline <- function(outline, x,y,side,
   # also generate the weight. Duplicate the head and tail points so that
   # they are included on both the left and right sides
   outline <- outline |> 
-    select(c({{x}}, {{y}}, {{side}})) |> 
-    rename(x = 1, y = 2, side = 3) |> 
     mutate(w = case_when(side == "H"  ~  headtailweight,
                          side == "T"  ~  headtailweight,
                          .default = 1)) |> 
@@ -51,8 +49,7 @@ get_midline <- function(outline, x,y,side,
   # should work correctly even if there are not the same number of points
   # on each side
   outline <- outline |> 
-    group_by(side) |> 
-    arrange(desc(x), .by_group = TRUE) |> 
+    arrange(side, desc(xctr)) |> 
     mutate(pt = seq(0, n()-1))
   
   # smooth the left side
@@ -60,25 +57,29 @@ get_midline <- function(outline, x,y,side,
     filter(side == "L") |> 
     smooth_left_right(spar, npt)
   
-  outlineL <- splinesL$outlineeven |> 
-    rename(xL = x,
-           yL = y,
-           lenL = len,
-           outptL = outpt)
-  
   # smooth the right side
   splinesR <-
     outline |> 
     filter(side == "R") |> 
     smooth_left_right(spar, npt)
 
+  if (is.null(splinesL) || is.null(splinesR)) {
+    bad <- tibble(s = rep(NA_real_, npt),
+                  xmid = NA_real_, ymid = NA_real_,
+                  xL = NA_real_, yL = NA_real_,
+                  xR = NA_real_, yR = NA_real_,
+                  lendiff = NA_real_)
+    
+    return(bad)
+  }
+
+  outlineL <- splinesL$outlineeven
+  colnames(outlineL) <- c("s", "outptL", "lenL", "xL", "yL")
+
   outlineR <- splinesR$outlineeven |> 
-    rename(xR = x,
-           yR = y,
-           lenR = len,
-           outptR = outpt) |> 
     select(-s)
-  
+  colnames(outlineR) <- c("outptR", "lenR", "xR", "yR")
+
   # join the smoothed left and right sides
   # calculate the fractional difference between the lengths of the left and
   # right sides. If they're very different, that suggests that there was an
@@ -154,13 +155,20 @@ get_midline <- function(outline, x,y,side,
 #'   map from point number to `x` and `y` coordinates, respectively
 smooth_left_right <- function(df, spar, npt)
 {
+  
+  if ((sum(!is.na(df$xctr)) < 4) ||
+      (sum(!is.na(df$yctr)) < 4)) {
+    return(NULL)
+  }
+
   # Run the first smoothing splines
+  
   splines <-
     with(df,
        list(
-         xsp = stats::smooth.spline(x = pt, y = x,
+         xsp = stats::smooth.spline(x = pt, y = xctr,
                                     spar = spar, w = w, cv = NA),
-         ysp = stats::smooth.spline(x = pt, y = y,
+         ysp = stats::smooth.spline(x = pt, y = yctr,
                                     spar = spar, w = w, cv = NA)
        )
     )
